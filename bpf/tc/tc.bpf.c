@@ -6,12 +6,14 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 
-#define DEBUG_BPF_PRINTK(...) bpf_printk(__VA_ARGS__);
+/* Set this flag to enable/ disable debug messages */
+#define DEBUG_ENABLED true
+
+#define DEBUG_BPF_PRINTK(...) if(DEBUG_ENABLED) {bpf_printk(__VA_ARGS__);}
 
 
 #define TC_ACT_OK	0
 #define ETH_P_IP	0x0800		/* Internet Protocol packet	*/
-#define TEST_NODEPORT   ((unsigned short) 31000)
 
 struct np_backends {
         __be32 be1;
@@ -108,6 +110,13 @@ int nodeport_lb4(struct __sk_buff *ctx) {
                         return TC_ACT_OK;
                 }
 
+                // Skip all BPF-CT unless port is of the target nodeport 
+/**
+                if (bpf_tuple.ipv4.dport != bpf_ntohs(TEST_NODEPORT)) {
+                        return TC_ACT_OK;
+                }
+**/
+
                 u16 key = bpf_ntohs(bpf_tuple.ipv4.dport);
 
                 lkup = (struct np_backends *) bpf_map_lookup_elem(&svc_map, &key);
@@ -126,7 +135,7 @@ int nodeport_lb4(struct __sk_buff *ctx) {
                 ct = bpf_skb_ct_lookup(ctx, &bpf_tuple,
                                        sizeof(bpf_tuple.ipv4),
                                        &opts_def, sizeof(opts_def));
-
+                // ret = !!ct;
                 if (ct) {
                     DEBUG_BPF_PRINTK("CT lookup (ct found) 0x%X\n", ct)
                     DEBUG_BPF_PRINTK("Timeout %u  status 0x%X dport 0x%X \n",  
