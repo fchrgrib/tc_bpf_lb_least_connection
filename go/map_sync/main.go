@@ -1,6 +1,6 @@
 package main
 
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -target amd64 -type Config fentry ../bpf/fentry/fentry.c -cflags "-I../../vmlinux.h/include/x86"
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -target amd64 -type Config fentry ../../bpf/fentry/fentry.c -cflags "-I../../vmlinux.h/include/x86"
 
 import (
 	"context"
