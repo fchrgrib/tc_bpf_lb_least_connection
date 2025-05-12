@@ -2,6 +2,7 @@ package main
 
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go -target amd64 -type Config fentry ../../bpf/fentry/fentry.c -cflags "-I../../vmlinux.h/include/x86"
 
+
 import (
 	"context"
 	"flag"
@@ -33,7 +34,7 @@ var kasp = keepalive.ServerParameters{
 
 type Node struct {
 	UnimplementedSyncServiceServer
-	syncObjs syncObjects
+	syncObjs fentryObjects
 }
 
 func (n *Node) SetValue(ctx context.Context, in *ValueRequest) (*Empty, error) {
@@ -77,8 +78,8 @@ func main() {
 		log.Fatal(err)
 	}
 
-	syncObjs := syncObjects{}
-	if err := loadSyncObjects(&syncObjs, nil); err != nil {
+	syncObjs := fentryObjects{}
+	if err := loadFentryObjects(&syncObjs, nil); err != nil {
 		log.Fatal(err)
 	}
 	defer syncObjs.Close()
@@ -100,7 +101,7 @@ func main() {
 	defer fDelete.Close()
 
 	var key uint32 = 0
-	config := syncConfig{
+	config := fentryConfig{
 		HostPort: uint16(*serverPort),
 		HostPid:  uint64(os.Getpid()),
 	}
