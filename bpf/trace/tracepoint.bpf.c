@@ -89,6 +89,11 @@ int trace_inet_sock_set_state(struct trace_event_raw_inet_sock_set_state *ctx)
     conn_info.daddr = daddr;
     conn_info.sport = sport;
     conn_info.dport = dport;
+    
+    // Handle new established connections
+    if (conn_info.daddr == 16777343 || conn_info.dport == 50051) {
+            return 0;
+    }
     if (newstate == TCP_ESTABLISHED) {
         // Set the connection type
         conn_info.type = 1;
