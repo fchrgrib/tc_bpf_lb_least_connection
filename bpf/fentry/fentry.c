@@ -4,7 +4,7 @@
 #define _ASM_X86_POSIX_TYPES_64_H
 
 #include "vmlinux.h"
-#include "sync.h"
+#include "fentry.h"
 #include "bpf/bpf_core_read.h"
 #include "bpf/bpf_helpers.h"
 #include "bpf/bpf_tracing.h"
