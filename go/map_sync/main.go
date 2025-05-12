@@ -1,6 +1,6 @@
 package main
 
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -target amd64 -type Config sync sync.c
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -target amd64 -type Config fentry ../bpf/fentry/fentry.c -cflags "-I../../vmlinux.h/include/x86"
 
 import (
 	"context"
@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"sync"
 	"time"
 	"unsafe"
 
@@ -25,9 +26,9 @@ import (
 var debug bool = false
 
 var kasp = keepalive.ServerParameters{
-	MaxConnectionIdle: 30 * time.Second, // If a client is idle for 30 seconds, send a GOAWAY
-	Time:              5 * time.Second,  // Ping the client if it is idle for 5 seconds to ensure the connection is still active
-	Timeout:           1 * time.Second,  // Wait 1 second for the ping ack before assuming the connection is dead
+	MaxConnectionIdle: 30 * time.Second,
+	Time:              5 * time.Second,
+	Timeout:           1 * time.Second,
 }
 
 type Node struct {
@@ -40,7 +41,6 @@ func (n *Node) SetValue(ctx context.Context, in *ValueRequest) (*Empty, error) {
 	key := in.GetKey()
 	_type := in.GetType()
 
-	// According to https://man7.org/linux/man-pages/man2/bpf.2.html, these calls are atomic!
 	if MapUpdater(_type).String() == "UPDATE" {
 		n.syncObjs.HashMap.Update(key, value, ebpf.UpdateAny)
 		log.Printf("Client updated key %d to value %d", key, value)
@@ -73,12 +73,10 @@ func main() {
 	flag.Parse()
 	address := *serverIP + ":" + fmt.Sprint(*serverPort)
 
-	// Allow the current process to lock memory for eBPF resources.
 	if err := rlimit.RemoveMemlock(); err != nil {
 		log.Fatal(err)
 	}
 
-	// Load pre-compiled programs and maps into the kernel.
 	syncObjs := syncObjects{}
 	if err := loadSyncObjects(&syncObjs, nil); err != nil {
 		log.Fatal(err)
@@ -89,7 +87,7 @@ func main() {
 		Program: syncObjs.syncPrograms.BpfProgKernHmapupdate,
 	})
 	if err != nil {
-		log.Fatalf("opening htab_map_update_elem kprobe: %s", err)
+		log.Fatalf("opening htab_map_update_elem fentry: %s", err)
 	}
 	defer fUpdate.Close()
 
@@ -97,13 +95,10 @@ func main() {
 		Program: syncObjs.syncPrograms.BpfProgKernHmapdelete,
 	})
 	if err != nil {
-		log.Fatalf("opening htab_map_delete_elem kprobe: %s", err)
+		log.Fatalf("opening htab_map_delete_elem fentry: %s", err)
 	}
 	defer fDelete.Close()
 
-	// Update the config map with the server's port and PID.
-	// This is compulsory to prevent the server from sending map updates to itself.
-	// NOTE: this also prevents each server to log eBPF map updates done by the same process that loaded them.
 	var key uint32 = 0
 	config := syncConfig{
 		HostPort: uint16(*serverPort),
@@ -114,7 +109,6 @@ func main() {
 		log.Fatalf("Failed to update the map: %v", err)
 	}
 
-	// Spawn the gRPC server to listen for eBPF map updates from neighbours.
 	go startServer(&Node{syncObjs: syncObjs}, ":"+fmt.Sprint(*serverPort))
 
 	rd, err := ringbuf.NewReader(syncObjs.MapEvents)
@@ -123,48 +117,79 @@ func main() {
 	}
 	defer rd.Close()
 
-	var avg float32 = 0
-	for {
-		record, err := rd.Read()
-		if err != nil {
-			panic(err)
-		}
+	// ---------------------- Batching setup ----------------------
+	eventChan := make(chan *MapData, 1000)
+	batchInterval := 10 * time.Second
+	var batch []*MapData
+	var mu = &sync.Mutex{}
 
-		start := time.Now()
-		Event := (*MapData)(unsafe.Pointer(&record.RawSample[0]))
+	// Ringbuf reader goroutine (producer)
+	go func() {
+		for {
+			record, err := rd.Read()
+			if err != nil {
+				log.Printf("Ringbuf read error: %v", err)
+				continue
+			}
+			event := (*MapData)(unsafe.Pointer(&record.RawSample[0]))
+			eventChan <- event
+		}
+	}()
 
-		if debug {
-			log.Printf("Map ID: %d", Event.MapID)
-			log.Printf("Name: %s", string(Event.Name[:]))
-			log.Printf("PID: %d", Event.PID)
-			log.Printf("Update Type: %s", Event.UpdateType.String())
-			log.Printf("Key: %d", Event.Key)
-			log.Printf("Key Size: %d", Event.KeySize)
-			log.Printf("Value: %d", Event.Value)
-			log.Printf("Value Size: %d", Event.ValueSize)
-		}
+	// Batch processor goroutine (consumer)
+	go func() {
+		ticker := time.NewTicker(batchInterval)
+		defer ticker.Stop()
 
-		conn, err := grpc.NewClient(address, grpc.WithTransportCredentials(insecure.NewCredentials()))
-		if err != nil {
-			log.Fatalf("Failed to connect to peer: %v", err)
-			continue
-		}
-		client := NewSyncServiceClient(conn)
-		ctx, _ := context.WithTimeout(context.Background(), time.Second)
-		_, err = client.SetValue(ctx, &ValueRequest{Key: int32(Event.Key), Value: int32(Event.Value), Type: int32(Event.UpdateType), Mapid: int32(Event.MapID)})
-		if err != nil {
-			log.Printf("Could not set value on peer: %v", err)
-		}
-		end := time.Since(start)
+		for {
+			select {
+			case ev := <-eventChan:
+				mu.Lock()
+				batch = append(batch, ev)
+				mu.Unlock()
 
-		if avg != 0 {
-			avg = (avg + float32(end.Milliseconds())) / float32(2)
-		} else {
-			avg = float32(end.Milliseconds())
+			case <-ticker.C:
+				mu.Lock()
+				toSend := batch
+				batch = nil
+				mu.Unlock()
+
+				if len(toSend) == 0 {
+					continue
+				}
+
+				conn, err := grpc.NewClient(address, grpc.WithTransportCredentials(insecure.NewCredentials()))
+				if err != nil {
+					log.Printf("Failed to connect to peer: %v", err)
+					continue
+				}
+				client := NewSyncServiceClient(conn)
+
+				for _, e := range toSend {
+					if debug {
+						log.Printf("Map ID: %d", e.MapID)
+						log.Printf("Name: %s", string(e.Name[:]))
+						log.Printf("PID: %d", e.PID)
+						log.Printf("Update Type: %s", e.UpdateType.String())
+						log.Printf("Key: %d", e.Key)
+						log.Printf("Value: %d", e.Value)
+					}
+					ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+					_, err := client.SetValue(ctx, &ValueRequest{
+						Key:   int32(e.Key),
+						Value: int32(e.Value),
+						Type:  int32(e.UpdateType),
+						Mapid: int32(e.MapID),
+					})
+					cancel()
+					if err != nil {
+						log.Printf("Could not set value on peer: %v", err)
+					}
+				}
+			}
 		}
-		if debug {
-			log.Printf("Average time taken: %f ms", avg)
-			log.Println("=====================================")
-		}
-	}
+	}()
+
+	// Block main thread forever
+	select {}
 }
