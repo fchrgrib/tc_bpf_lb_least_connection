@@ -85,7 +85,7 @@ func main() {
 	defer syncObjs.Close()
 
 	fUpdate, err := link.AttachTracing(link.TracingOptions{
-		Program: syncObjs.syncPrograms.BpfProgKernHmapupdate,
+		Program: syncObjs.fentryPrograms.BpfProgKernHmapupdate,
 	})
 	if err != nil {
 		log.Fatalf("opening htab_map_update_elem fentry: %s", err)
@@ -93,7 +93,7 @@ func main() {
 	defer fUpdate.Close()
 
 	fDelete, err := link.AttachTracing(link.TracingOptions{
-		Program: syncObjs.syncPrograms.BpfProgKernHmapdelete,
+		Program: syncObjs.fentryPrograms.BpfProgKernHmapdelete,
 	})
 	if err != nil {
 		log.Fatalf("opening htab_map_delete_elem fentry: %s", err)
@@ -105,7 +105,7 @@ func main() {
 		HostPort: uint16(*serverPort),
 		HostPid:  uint64(os.Getpid()),
 	}
-	err = syncObjs.syncMaps.MapConfig.Update(&key, &config, ebpf.UpdateAny)
+	err = syncObjs.fentryMaps.MapConfig.Update(&key, &config, ebpf.UpdateAny)
 	if err != nil {
 		log.Fatalf("Failed to update the map: %v", err)
 	}
