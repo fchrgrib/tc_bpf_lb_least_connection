@@ -167,6 +167,16 @@ func main() {
 				client := NewSyncServiceClient(conn)
 
 				for _, e := range toSend {
+					if debug {
+						log.Printf("Map ID: %d", e.MapID)
+						log.Printf("Name: %s", string(e.Name[:]))
+						log.Printf("PID: %d", e.PID)
+						log.Printf("Update Type: %s", e.UpdateType.String())
+						log.Printf("Key: %d", e.Key)
+						log.Printf("Value: %d", e.Value)
+					}
+					ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+					
 					key := uint32(e.Key)
 					value := uint32(e.Value)
 
@@ -185,20 +195,7 @@ func main() {
 							log.Printf("Locally deleted key %d", key)
 						}
 					}
-				}
 
-				for _, e := range toSend {
-					if debug {
-						log.Printf("Map ID: %d", e.MapID)
-						log.Printf("Name: %s", string(e.Name[:]))
-						log.Printf("PID: %d", e.PID)
-						log.Printf("Update Type: %s", e.UpdateType.String())
-						log.Printf("Key: %d", e.Key)
-						log.Printf("Value: %d", e.Value)
-					}
-					ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-					// ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-					// Send the value to the peer
 					_, err = client.SetValue(ctx, &ValueRequest{
 						Key:   int32(e.Key),
 						Value: int32(e.Value),
