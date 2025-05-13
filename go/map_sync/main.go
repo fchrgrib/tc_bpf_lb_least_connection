@@ -167,6 +167,27 @@ func main() {
 				client := NewSyncServiceClient(conn)
 
 				for _, e := range toSend {
+					key := uint32(e.Key)
+					value := uint32(e.Value)
+
+					switch MapUpdater(e.UpdateType).String() {
+					case "UPDATE":
+						if err := fentryObjs.HashMap.Update(&key, &value, ebpf.UpdateAny); err != nil {
+							log.Printf("Local update failed: %v", err)
+						} else if debug {
+							log.Printf("Locally updated key %d to value %d", key, value)
+						}
+
+					case "DELETE":
+						if err := fentryObjs.HashMap.Delete(&key); err != nil {
+							log.Printf("Local delete failed: %v", err)
+						} else if debug {
+							log.Printf("Locally deleted key %d", key)
+						}
+					}
+				}
+
+				for _, e := range toSend {
 					if debug {
 						log.Printf("Map ID: %d", e.MapID)
 						log.Printf("Name: %s", string(e.Name[:]))
@@ -176,16 +197,6 @@ func main() {
 						log.Printf("Value: %d", e.Value)
 					}
 					ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-					_, err := n.SetValue(ctx, &ValueRequest{
-						Key:   int32(e.Key),
-						Value: int32(e.Value),
-						Type:  int32(e.UpdateType),
-						Mapid: int32(e.MapID),
-					})
-					// cancel()
-					if err != nil {
-						log.Printf("Could not set value on peer: %v", err)
-					}
 					// ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 					// Send the value to the peer
 					_, err = client.SetValue(ctx, &ValueRequest{
