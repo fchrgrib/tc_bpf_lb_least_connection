@@ -175,7 +175,7 @@ func main() {
 						log.Printf("Key: %d", e.Key)
 						log.Printf("Value: %d", e.Value)
 					}
-					ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+					ctx, cancel = context.WithTimeout(context.Background(), time.Second)
 					_, err := n.SetValue(ctx, &ValueRequest{
 						Key:   int32(e.Key),
 						Value: int32(e.Value),
