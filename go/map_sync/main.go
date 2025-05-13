@@ -34,7 +34,7 @@ var kasp = keepalive.ServerParameters{
 
 type Node struct {
 	UnimplementedSyncServiceServer
-	syncObjs fentryObjects
+	fentryObjs fentryObjects
 }
 
 func (n *Node) SetValue(ctx context.Context, in *ValueRequest) (*Empty, error) {
@@ -43,10 +43,10 @@ func (n *Node) SetValue(ctx context.Context, in *ValueRequest) (*Empty, error) {
 	_type := in.GetType()
 
 	if MapUpdater(_type).String() == "UPDATE" {
-		n.syncObjs.HashMap.Update(key, value, ebpf.UpdateAny)
+		n.fentryObjs.HashMap.Update(key, value, ebpf.UpdateAny)
 		log.Printf("Client updated key %d to value %d", key, value)
 	} else if MapUpdater(_type).String() == "DELETE" {
-		n.syncObjs.HashMap.Delete(key)
+		n.fentryObjs.HashMap.Delete(key)
 		log.Printf("Client deleted key %d", key)
 	}
 
@@ -78,14 +78,14 @@ func main() {
 		log.Fatal(err)
 	}
 
-	syncObjs := fentryObjects{}
-	if err := loadFentryObjects(&syncObjs, nil); err != nil {
+	fentryObjs := fentryObjects{}
+	if err := loadFentryObjects(&fentryObjs, nil); err != nil {
 		log.Fatal(err)
 	}
-	defer syncObjs.Close()
+	defer fentryObjs.Close()
 
 	fUpdate, err := link.AttachTracing(link.TracingOptions{
-		Program: syncObjs.fentryPrograms.BpfProgKernHmapupdate,
+		Program: fentryObjs.fentryPrograms.BpfProgKernHmapupdate,
 	})
 	if err != nil {
 		log.Fatalf("opening htab_map_update_elem fentry: %s", err)
@@ -93,7 +93,7 @@ func main() {
 	defer fUpdate.Close()
 
 	fDelete, err := link.AttachTracing(link.TracingOptions{
-		Program: syncObjs.fentryPrograms.BpfProgKernHmapdelete,
+		Program: fentryObjs.fentryPrograms.BpfProgKernHmapdelete,
 	})
 	if err != nil {
 		log.Fatalf("opening htab_map_delete_elem fentry: %s", err)
@@ -105,14 +105,14 @@ func main() {
 		HostPort: uint16(*serverPort),
 		HostPid:  uint64(os.Getpid()),
 	}
-	err = syncObjs.fentryMaps.MapConfig.Update(&key, &config, ebpf.UpdateAny)
+	err = fentryObjs.fentryMaps.MapConfig.Update(&key, &config, ebpf.UpdateAny)
 	if err != nil {
 		log.Fatalf("Failed to update the map: %v", err)
 	}
 
-	go startServer(&Node{syncObjs: syncObjs}, ":"+fmt.Sprint(*serverPort))
+	go startServer(&Node{fentryObjs: fentryObjs}, ":"+fmt.Sprint(*serverPort))
 
-	rd, err := ringbuf.NewReader(syncObjs.MapEvents)
+	rd, err := ringbuf.NewReader(fentryObjs.MapEvents)
 	if err != nil {
 		panic(err)
 	}
