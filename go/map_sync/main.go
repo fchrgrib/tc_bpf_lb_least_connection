@@ -120,7 +120,7 @@ func main() {
 
 	// ---------------------- Batching setup ----------------------
 	eventChan := make(chan *MapData, 1000)
-	batchInterval := 10 * time.Second
+	batchInterval := 5 * time.Second
 	var batch []*MapData
 	var mu = &sync.Mutex{}
 
