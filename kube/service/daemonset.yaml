@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: pod-ip-tracker
+spec:
+  selector:
+    matchLabels:
+      app: pod-ip-tracker
+  template:
+    metadata:
+      labels:
+        app: pod-ip-tracker
+    spec:
+      tolerations:
+      - key: node-role.kubernetes.io/control-plane
+        operator: Exists
+        effect: NoSchedule
+      - key: node-role.kubernetes.io/master
+        operator: Exists
+        effect: NoSchedule
+      
+      nodeSelector:
+        node-role.kubernetes.io/worker: "true"
+      
+      serviceAccountName: pod-ip-tracker
+      hostNetwork: true
+      containers:
+      - name: tracker
+        image: fchrgrib/pod-ip-tracker:latest
+        securityContext:
+          capabilities:
+            add: ["BPF", "NET_ADMIN", "SYS_ADMIN"]
+          privileged: false 
+        env:
+        - name: USE_INCLUSTER_CONFIG 
+          value: "true"
+        volumeMounts:
+        - name: lib-modules
+          mountPath: /lib/modules
+        - name: bpf-fs
+          mountPath: /sys/fs/bpf
+      volumes:
+      - name: lib-modules
+        hostPath:
+          path: /lib/modules
+      - name: bpf-fs
+        hostPath:
+          path: /sys/fs/bpf
+          type: Directory
