@@ -19,9 +19,6 @@ spec:
         operator: Exists
         effect: NoSchedule
       
-      nodeSelector:
-        node-role.kubernetes.io/worker: "true"
-      
       serviceAccountName: conntracker
       hostNetwork: true
       containers:
@@ -30,10 +27,6 @@ spec:
         securityContext:
           capabilities:
             add: ["BPF", "NET_ADMIN", "SYS_ADMIN"]
-          privileged: false 
-        env:
-        - name: USE_INCLUSTER_CONFIG 
-          value: "true"
         volumeMounts:
         - name: lib-modules
           mountPath: /lib/modules
