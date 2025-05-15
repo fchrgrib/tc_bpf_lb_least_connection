@@ -12,13 +12,7 @@ spec:
         app: conntracker
     spec:
       tolerations:
-      - key: node-role.kubernetes.io/control-plane
-        operator: Exists
-        effect: NoSchedule
-      - key: node-role.kubernetes.io/master
-        operator: Exists
-        effect: NoSchedule
-      
+      - operator: Exists  # Tolerate all taints
       serviceAccountName: conntracker
       hostNetwork: true
       containers:
@@ -27,11 +21,17 @@ spec:
         securityContext:
           capabilities:
             add: ["BPF", "NET_ADMIN", "SYS_ADMIN"]
+          privileged: true
+        env:
+        - name: KUBECONFIG
+          value: "/var/run/secrets/kubernetes.io/serviceaccount/token"
         volumeMounts:
         - name: lib-modules
           mountPath: /lib/modules
         - name: bpf-fs
           mountPath: /sys/fs/bpf
+        - name: kernel-headers
+          mountPath: /usr/src/linux-headers
       volumes:
       - name: lib-modules
         hostPath:
@@ -39,4 +39,8 @@ spec:
       - name: bpf-fs
         hostPath:
           path: /sys/fs/bpf
+          type: Directory
+      - name: kernel-headers
+        hostPath:
+          path: /usr/src/linux-headers-$(uname -r)
           type: Directory
