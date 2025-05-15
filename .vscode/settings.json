@@ -1,0 +1,7 @@
+{
+    "files.associations": {
+        "tracepoint.h": "c",
+        "bpf_tracing.h": "c",
+        "bpf_core_read.h": "c"
+    }
+}

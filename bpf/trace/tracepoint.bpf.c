@@ -1,10 +1,13 @@
+//go:build ignore
 // SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
 /* Copyright (c) 2021 Sartura */
-#include <vmlinux.h>
+#include "vmlinux.h"
+
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
 #include <bpf/bpf_endian.h>
+#include "tracepoint.h"  // This should match your .bpf.c filename
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
@@ -17,21 +20,19 @@ char LICENSE[] SEC("license") = "Dual BSD/GPL";
 #define TCP_ESTABLISHED 1
 #define TCP_CLOSE 7
 
-// Structure to store connection information
-struct conn_info_t {
-    u32 saddr;
-    u32 daddr;
-    u16 sport;
-    u16 dport;
-    u32 pid;
-    u64 ts;
-    u8 type;  // 1 = connect, 2 = close
-    u8 old_state;
-    u8 new_state;
-    char comm[16];
-};
+// struct conn_info_t {
+//     __u32 saddr;
+//     __u32 daddr;
+//     __u16 sport;
+//     __u16 dport;
+//     __u32 pid;
+//     __u64 ts;
+//     __u8 type;
+//     __u8 old_state;
+//     __u8 new_state;
+//     char comm[16];
+// };
 
-// BPF map to track connection counts
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, 65536);

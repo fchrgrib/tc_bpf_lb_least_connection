@@ -18,38 +18,37 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 )
 
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -target bpfel connTracker ./bpf/conn_tracker.c -- -I./headers
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -target bpfel tracepoint ../../bpf/trace/tracepoint.bpf.c -cflags "-I../../bpf/trace -I../../vmlinux.h/include/x86"
 
-type ConnStats struct {
-	PodIP     string
-	ConnCount uint64
+type ConnectionStats struct {
+	PodIP       string
+	ActiveConns uint32
 }
 
 func main() {
-	// Remove resource limits for eBPF
 	if err := rlimit.RemoveMemlock(); err != nil {
 		log.Fatalf("Failed to remove memlock limit: %v", err)
 	}
 
 	// Load eBPF program
-	objs := connTrackerObjects{}
-	if err := loadConnTrackerObjects(&objs, nil); err != nil {
+	objs := tracepointObjects{}
+	if err := loadTracepointObjects(&objs, nil); err != nil {
 		log.Fatalf("Failed to load eBPF objects: %v", err)
 	}
 	defer objs.Close()
 
-	// Attach eBPF program to kernel
-	kp, err := link.Kprobe("tcp_connect", objs.CountConnection, nil)
+	// Attach tracepoint
+	tp, err := link.Tracepoint("sock", "inet_sock_set_state", objs.TraceInetSockSetState, nil)
 	if err != nil {
-		log.Fatalf("Failed to attach kprobe: %v", err)
+		log.Fatalf("Failed to attach tracepoint: %v", err)
 	}
-	defer kp.Close()
+	defer tp.Close()
 
 	// Initialize Kubernetes client
-	config, err := rest.InClusterConfig()
+	config, err := clientcmd.BuildConfigFromFlags("", os.Getenv("KUBECONFIG"))
 	if err != nil {
 		log.Fatalf("Failed to get in-cluster config: %v", err)
 	}
@@ -68,10 +67,10 @@ func main() {
 	}()
 
 	// Start metrics server
-	go serveMetrics(objs.ActiveConns)
+	go serveMetrics(objs.PodConnectionCounts)
 
 	// Main sync loop
-	ticker := time.NewTicker(15 * time.Second)
+	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
 	for {
@@ -80,21 +79,20 @@ func main() {
 			log.Println("Shutting down...")
 			return
 		case <-ticker.C:
-			if err := syncPodConnMap(clientset, objs.ActiveConns); err != nil {
+			if err := syncPodIPs(clientset, objs.PodConnectionCounts); err != nil {
 				log.Printf("Sync failed: %v", err)
 			}
-			logConnectionCounts(objs.ActiveConns)
+			logConnectionStats(objs.PodConnectionCounts)
 		}
 	}
 }
 
-func syncPodConnMap(clientset *kubernetes.Clientset, connMap *ebpf.Map) error {
+func syncPodIPs(clientset *kubernetes.Clientset, connMap *ebpf.Map) error {
 	pods, err := clientset.CoreV1().Pods("").List(context.TODO(), metav1.ListOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to list pods: %v", err)
 	}
 
-	// Create set of current pod IPs
 	currentIPs := make(map[uint32]struct{})
 	for _, pod := range pods.Items {
 		if pod.Status.PodIP == "" || pod.Status.Phase != corev1.PodRunning {
@@ -110,7 +108,7 @@ func syncPodConnMap(clientset *kubernetes.Clientset, connMap *ebpf.Map) error {
 		currentIPs[key] = struct{}{}
 
 		// Initialize if not exists
-		var count uint64
+		var count uint32
 		if err := connMap.Lookup(&key, &count); err != nil {
 			if err := connMap.Put(&key, &count); err != nil {
 				log.Printf("Failed to init entry for %s: %v", pod.Status.PodIP, err)
@@ -120,7 +118,7 @@ func syncPodConnMap(clientset *kubernetes.Clientset, connMap *ebpf.Map) error {
 
 	// Cleanup stale entries
 	var key uint32
-	var count uint64
+	var count uint32
 	iter := connMap.Iterate()
 	for iter.Next(&key, &count) {
 		if _, exists := currentIPs[key]; !exists {
@@ -133,39 +131,40 @@ func syncPodConnMap(clientset *kubernetes.Clientset, connMap *ebpf.Map) error {
 	return nil
 }
 
-func logConnectionCounts(connMap *ebpf.Map) {
+func logConnectionStats(connMap *ebpf.Map) {
 	var key uint32
-	var count uint64
+	var count uint32
 
-	stats := make([]ConnStats, 0)
+	stats := make([]ConnectionStats, 0)
 	iter := connMap.Iterate()
 	for iter.Next(&key, &count) {
 		ip := make(net.IP, 4)
 		binary.BigEndian.PutUint32(ip, key)
-		stats = append(stats, ConnStats{
-			PodIP:     ip.String(),
-			ConnCount: count,
+		stats = append(stats, ConnectionStats{
+			PodIP:       ip.String(),
+			ActiveConns: count,
 		})
 	}
 
-	log.Println("Current connection counts:")
+	log.Println("Current connection stats:")
 	for _, s := range stats {
-		log.Printf("  %s: %d connections", s.PodIP, s.ConnCount)
+		log.Printf("  %s: %d active connections", s.PodIP, s.ActiveConns)
 	}
 }
 
 func serveMetrics(connMap *ebpf.Map) {
 	http.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
 		var key uint32
-		var count uint64
+		var count uint32
 
 		iter := connMap.Iterate()
 		for iter.Next(&key, &count) {
 			ip := make(net.IP, 4)
 			binary.BigEndian.PutUint32(ip, key)
-			fmt.Fprintf(w, "pod_connections_total{ip=\"%s\"} %d\n", ip, count)
+			fmt.Fprintf(w, "pod_connections_active{ip=\"%s\"} %d\n", ip, count)
 		}
 	})
 
+	log.Println("Starting metrics server on :8080")
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }
