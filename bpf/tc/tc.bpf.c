@@ -134,7 +134,7 @@ int nodeport_lb4(struct __sk_buff *ctx) {
             }
 
             // Get service name from lookup
-            bpf_probe_read_str(service_name, sizeof(service_name), lkup->service_name);
+            bpf_probe_read_kernel_str(service_name, sizeof(service_name), lkup->service_name);
             DEBUG_BPF_PRINTK("Found service: %s \n", service_name);
 
             ct = bpf_skb_ct_lookup(ctx, &bpf_tuple,
