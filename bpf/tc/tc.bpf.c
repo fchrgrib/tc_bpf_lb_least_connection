@@ -17,9 +17,9 @@
 #define TEST_NODEPORT   ((unsigned short) 30080)
 
 struct np_backends {
-        __be32 be1;
-        __be32 be2;
-        __u16 targetPort;
+        char service_name[32];
+        __u16    targetPort;
+        __u16    pad;
 };
 
 /* Simplified map definition for initial POC */
@@ -68,6 +68,7 @@ int nodeport_lb4(struct __sk_buff *ctx) {
         struct ethhdr *eth = data;
         u64 nh_off = sizeof(*eth);
         struct np_backends *lkup;
+        char service_name[32];
         __be32  b1;
         __be32  b2;
 
@@ -123,8 +124,11 @@ int nodeport_lb4(struct __sk_buff *ctx) {
                 lkup = (struct np_backends *) bpf_map_lookup_elem(&svc_map, &key);
 
                 if (lkup) {
-                    b1 = lkup->be1;
-                    b2 = lkup->be2;
+                    // b1 = lkup->be1;
+                    // b2 = lkup->be2;
+                    // initialize service_name from lkup
+                    bpf_probe_read_str(service_name, sizeof(service_name),
+                                       lkup->service_name);
                     DEBUG_BPF_PRINTK("lkup result: Full BE1 0x%X  BE2 0x%X \n",
                                       b1, b2)
                 } else {
@@ -168,12 +172,63 @@ int nodeport_lb4(struct __sk_buff *ctx) {
                     // Rudimentary load balancing for now based on received source port
 
                     union nf_inet_addr addr = {};
- 
-                    addr.ip = b1;
 
-                    if (bpf_htons(bpf_tuple.ipv4.sport) % 2) {
-                        addr.ip = b2;
+                    int map_count = bpf_obj_get("/sys/fs/bpf/hash_map");     
+                    if (map_count < 0) {
+                        DEBUG_BPF_PRINTK("bpf_obj_get() failed\n")
+                        return TC_ACT_OK;
                     }
+
+                    int map_pods = bpf_obj_get("/sys/fs/bpf/service_pod_ips");
+                    if (map_pods < 0) {
+                        DEBUG_BPF_PRINTK("bpf_obj_get() failed\n")
+                        return TC_ACT_OK;
+                    }
+
+                    char key_pod[32] = {0};
+                    char next_key_pod[32] ={0};
+                    int min_key = 0;
+                    // add max_size of int
+
+                    int min_val = sizeof(int);
+
+                    while(bpf_map_get_next_key(&map_pods, key_pod, next_key_pod) == 0) {
+                        if (strncmp(next_key_pod, service_name, 12) == 0) {
+                            char value_pod[16] = bpf_map_lookup_elem(&map_pods, next_key_pod);
+
+                            if (value_pod != NULL) {
+
+                                __u32 ip = *(__u32 *)&value_pod[12];
+                                if (min_val > bpf_map_lookup_elem(&map_count, &ip)) {
+                                    min_val = bpf_map_lookup_elem(&map_count, &ip);
+                                    addr.ip = ip;
+                                }
+                                DEBUG_BPF_PRINTK("Found backend pod: %s\n", next_key_pod);
+                                DEBUG_BPF_PRINTK("Value: %s\n", value_pod);
+                                for (int i = 0; i < 16; i++) {
+                                    DEBUG_BPF_PRINTK("%02x ", (unsigned char)value_pod[i]);
+                                }
+
+                                // Extract IP (assuming format: 00 00 ff ff 0a XX YY ZZ)
+                                unsigned char ip_part[4] = {
+                                    (unsigned char)value_pod[12],
+                                    (unsigned char)value_pod[13],
+                                    (unsigned char)value_pod[14],
+                                    (unsigned char)value_pod[15]
+                                };
+                                DEBUG_BPF_PRINTK("Extracted IP: %u.%u.%u.%u\n",
+                                    ip_part[0], ip_part[1], ip_part[2], ip_part[3]);
+                            }
+                        }
+                        memcpy(key, next_key_pod, 32);
+                    }
+
+ 
+                    // addr.ip = b1;
+
+                    // if (bpf_htons(bpf_tuple.ipv4.sport) % 2) {
+                    //     addr.ip = b2;
+                    // }
 
                     /* Add DNAT info */
                     bpf_ct_set_nat_info(nct, &addr, lkup->targetPort, NF_NAT_MANIP_DST);
