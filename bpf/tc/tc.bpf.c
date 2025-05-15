@@ -29,20 +29,24 @@ struct {
         __type(value, struct np_backends);
 } svc_map SEC(".maps");
 
-/* Define maps for connection tracking */
+/* Define array maps for pod IPs - will hold a fixed number of pod entries */
+struct {
+        __uint(type, BPF_MAP_TYPE_ARRAY);
+        __uint(max_entries, 10);  // Support up to 10 pod entries
+        __type(key, __u32);       // Index into array
+        __type(value, struct {
+            char name[32];        // Pod name/service name
+            __u32 ip;             // Pod IP address
+        });
+} pod_ips SEC(".maps");
+
+/* Map for connection counts per IP */
 struct {
         __uint(type, BPF_MAP_TYPE_HASH);
         __uint(max_entries, 10240);
         __type(key, __u32);
         __type(value, __u32);
-} hash_map SEC(".maps");
-
-struct {
-        __uint(type, BPF_MAP_TYPE_HASH);
-        __uint(max_entries, 100);
-        __type(key, char[32]);
-        __type(value, __u32[4]);
-} service_pod_ips SEC(".maps");
+} connection_count SEC(".maps");
 
 struct bpf_ct_opts {
         s32 netns_id;
@@ -71,16 +75,6 @@ void bpf_ct_set_timeout(struct nf_conn *nfct, u32 timeout) __ksym;
 int bpf_ct_set_status(const struct nf_conn *nfct, u32 status) __ksym;
 
 void bpf_ct_release(struct nf_conn *) __ksym;
-
-/* Function to check if string matches a pattern */
-static __always_inline bool string_starts_with(const char *str, const char *prefix, size_t prefix_len) {
-    // Simple loop-based string comparison for BPF
-    for (int i = 0; i < prefix_len; i++) {
-        if (str[i] != prefix[i] || str[i] == 0)
-            return false;
-    }
-    return true;
-}
 
 /* Not marking this function to be inline for now */
 int nodeport_lb4(struct __sk_buff *ctx) {
@@ -175,58 +169,64 @@ int nodeport_lb4(struct __sk_buff *ctx) {
                 }
 
                 union nf_inet_addr addr = {};
-                __u32 min_val = ~0U; // Initialize with max unsigned value
+                __u32 min_val = ~0U;  // Initialize with max unsigned value
                 __u32 selected_ip = 0;
                 const char service_prefix[] = "test-backend";
                 const size_t prefix_len = sizeof(service_prefix) - 1;
 
-                // Iterate through service_pod_ips map
-                char key_pod[32] = {0};
-                char next_key_pod[32] = {0};
-                bool first_iteration = true;
-
-                // BPF loop with fixed iterations for verifier
+                // Iterate through pod_ips map (fixed array with 10 entries)
                 #pragma unroll
-                for (int i = 0; i < 20; i++) {
-                    int err = bpf_map_get_next_key(&service_pod_ips, 
-                                                  first_iteration ? NULL : &key_pod, 
-                                                  &next_key_pod);
-                    if (err < 0)
-                        break;
+                for (int i = 0; i < 10; i++) {
+                    __u32 key = i;
+                    struct {
+                        char name[32];
+                        __u32 ip;
+                    } *entry = bpf_map_lookup_elem(&pod_ips, &key);
                     
-                    first_iteration = false;
+                    if (!entry)
+                        continue;
                     
-                    if (string_starts_with(next_key_pod, service_prefix, prefix_len)) {
-                        __u32 *ip_array = bpf_map_lookup_elem(&service_pod_ips, &next_key_pod);
+                    // Skip empty entries
+                    if (entry->ip == 0)
+                        continue;
                         
-                        if (ip_array) {
-                            __u32 pod_ip = ip_array[3]; // Last element is the IP
-                            
-                            // Get connection count
-                            __u32 *count = bpf_map_lookup_elem(&hash_map, &pod_ip);
-                            __u32 conn_count = count ? *count : 0;
-                            
-                            if (conn_count < min_val) {
-                                min_val = conn_count;
-                                selected_ip = pod_ip;
-                            }
+                    // Check if this entry belongs to our service
+                    bool match = true;
+                    #pragma unroll
+                    for (int j = 0; j < prefix_len; j++) {
+                        if (entry->name[j] != service_prefix[j]) {
+                            match = false;
+                            break;
                         }
                     }
                     
-                    // Copy next_key to key for next iteration
-                    __builtin_memcpy(&key_pod, &next_key_pod, sizeof(key_pod));
+                    if (!match)
+                        continue;
+                        
+                    // Look up connection count
+                    __u32 *count = bpf_map_lookup_elem(&connection_count, &entry->ip);
+                    __u32 conn_count = count ? *count : 0;
+                    
+                    if (conn_count < min_val) {
+                        min_val = conn_count;
+                        selected_ip = entry->ip;
+                    }
                 }
-
+                
                 // If we found a valid IP, use it
                 if (selected_ip != 0) {
                     addr.ip = selected_ip;
                     
                     // Update connection count
                     __u32 new_count = min_val + 1;
-                    bpf_map_update_elem(&hash_map, &selected_ip, &new_count, BPF_ANY);
+                    bpf_map_update_elem(&connection_count, &selected_ip, &new_count, BPF_ANY);
+                    
+                    DEBUG_BPF_PRINTK("Selected pod IP: 0x%x, Count: %u\n", 
+                                     selected_ip, new_count);
                 } else {
                     // Fallback: Use the original destination IP
                     addr.ip = iph->daddr;
+                    DEBUG_BPF_PRINTK("No pod found, using orig IP: 0x%x\n", addr.ip);
                 }
 
                 /* Add DNAT info */
