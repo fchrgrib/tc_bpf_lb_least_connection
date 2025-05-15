@@ -42,5 +42,5 @@ spec:
           type: Directory
       - name: kernel-headers
         hostPath:
-          path: /usr/src/linux-headers-$(uname -r)
+          path: /usr/src
           type: Directory
