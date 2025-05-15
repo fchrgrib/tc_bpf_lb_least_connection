@@ -23,6 +23,9 @@ spec:
             add: ["BPF", "NET_ADMIN", "SYS_ADMIN"]
           privileged: true
         env:
+        - name: KUBECONFIG
+          value: "/var/run/secrets/kubernetes.io/serviceaccount/token"
+        # This environment variable could be needed if your app expects it
         - name: USE_INCLUSTER_CONFIG
           value: "true"
         volumeMounts:
@@ -30,9 +33,7 @@ spec:
           mountPath: /lib/modules
         - name: bpf-fs
           mountPath: /sys/fs/bpf
-        - name: kernel-src
-          mountPath: /usr/src/kernels
-        - name: kernel-devel
+        - name: kernel-headers
           mountPath: /usr/src/linux-headers
       volumes:
       - name: lib-modules
@@ -42,11 +43,7 @@ spec:
         hostPath:
           path: /sys/fs/bpf
           type: Directory
-      - name: kernel-src
+      - name: kernel-headers
         hostPath:
-          path: /usr/src/kernels
-          type: Directory
-      - name: kernel-devel
-        hostPath:
-          path: /usr/src/linux-headers-$(uname -r)
+          path: /usr/src
           type: Directory
