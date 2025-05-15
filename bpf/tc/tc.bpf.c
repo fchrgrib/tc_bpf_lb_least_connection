@@ -194,9 +194,9 @@ int nodeport_lb4(struct __sk_buff *ctx) {
                     // Find pod with minimum connection count
                     while (bpf_map_get_next_key(map_pods_fd, key_pod, next_key_pod) == 0) {
                         if (strncmp(next_key_pod, service_name, 12) == 0) {
-                            __u32 value_pod[4] = bpf_map_lookup_elem(map_pods_fd, next_key_pod);
+                            __u32 *value_pod = bpf_map_lookup_elem(map_pods_fd, next_key_pod);
                             
-                            if (!value_pod) {
+                            if (value_pod) {
                                 __u32 pod_ip = value_pod[3]; // Last 4 bytes contain IP
                                 
                                 // Get connection count
