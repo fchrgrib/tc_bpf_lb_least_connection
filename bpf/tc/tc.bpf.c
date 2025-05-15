@@ -58,6 +58,8 @@ int bpf_ct_set_status(const struct nf_conn *nfct, u32 status) __ksym;
 
 void bpf_ct_release(struct nf_conn *) __ksym;
 
+extern int bpf_obj_get(const char *pathname) __ksym;
+
 // static __always_inline int nodeport_lb4(struct __sk_buff *ctx) {
 
 /* Not marking this function to be inline for now */
