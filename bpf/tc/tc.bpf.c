@@ -60,6 +60,7 @@ void bpf_ct_release(struct nf_conn *) __ksym;
 
 extern int bpf_obj_get(const char *pathname) __ksym;
 extern int bpf_map_get_next_key(void *map, const void *key, void *next_key) __ksym;
+extern int memcmp(const void *s1, const void *s2, __u64 n) __ksym;
 
 // static __always_inline int nodeport_lb4(struct __sk_buff *ctx) {
 
