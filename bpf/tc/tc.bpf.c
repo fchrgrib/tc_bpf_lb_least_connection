@@ -169,21 +169,21 @@ int nodeport_lb4(struct __sk_buff *ctx) {
 
                     union nf_inet_addr addr = {};
 
-                    bpf_obj_fd_t svc_pod_ips;
-                    bpf_obj_fd_t hash_map;;
-
-                    int err = bpf_obj_get("/sys/fs/bpf/svc_pod_ips", &svc_pod_ips);
-
-                    if (err<0) {
+                    int svc_pod_ips = bpf_obj_get("/sys/fs/bpf/svc_pod_ips");
+                    if (svc_pod_ips < 0) {
                         DEBUG_BPF_PRINTK("bpf_obj_get() failed\n")
                         return TC_ACT_OK;
                     }
+                    DEBUG_BPF_PRINTK("bpf_obj_get() returned fd %d\n", svc_pod_ips)
 
-                    err = bpf_obj_get("/sys/fs/bpf/hash_map", &hash_map);
-                    if (err<0) {
+                    int hash_map = bpf_obj_get("/sys/fs/bpf/hash_map");
+                    if (hash_map < 0) {
                         DEBUG_BPF_PRINTK("bpf_obj_get() failed\n")
                         return TC_ACT_OK;
                     }
+                    DEBUG_BPF_PRINTK("bpf_obj_get() returned fd %d\n", hash_map)
+
+
                     DEBUG_BPF_PRINTK("bpf_obj_get() returned fd %d\n", svc_pod_ips)
                     DEBUG_BPF_PRINTK("bpf_obj_get() returned fd %d\n", hash_map)
  
