@@ -219,11 +219,11 @@ int nodeport_lb4(struct __sk_buff *ctx) {
                     //     DEBUG_BPF_PRINTK("bpf_obj_get() failed\n")
                     //     return TC_ACT_OK;
                     // }
-                    DEBUG_BPF_PRINTK("bpf_obj_get() returned fd %d\n", hash_map)
+                    // DEBUG_BPF_PRINTK("bpf_obj_get() returned fd %d\n", hash_map)
 
 
-                    DEBUG_BPF_PRINTK("bpf_obj_get() returned fd %d\n", svc_pod_ips)
-                    DEBUG_BPF_PRINTK("bpf_obj_get() returned fd %d\n", hash_map)
+                    // DEBUG_BPF_PRINTK("bpf_obj_get() returned fd %d\n", svc_pod_ips)
+                    // DEBUG_BPF_PRINTK("bpf_obj_get() returned fd %d\n", hash_map)
  
                     addr.ip = b1;
 
