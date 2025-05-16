@@ -16,6 +16,30 @@
 #define ETH_P_IP	0x0800		/* Internet Protocol packet	*/
 #define TEST_NODEPORT   ((unsigned short) 30080)
 
+// clear this
+// For nf_inet_addr
+union nf_inet_addr {
+    __u32 ip;
+    __u32 ip6[4];
+    struct {
+        __u32 ip;
+        __u32 pad[3];
+    };
+};
+
+// For nf_nat_manip_type
+enum nf_nat_manip_type {
+    NF_NAT_MANIP_SRC,
+    NF_NAT_MANIP_DST
+};
+
+// For connection tracking status
+#define IP_CT_NEW 0
+#define IP_CT_ESTABLISHED 1
+#define IP_CT_RELATED 2
+#define IP_CT_NEW_REPLY 3
+// clear this
+
 struct np_backends {
         __be32 be1;
         __be32 be2;
