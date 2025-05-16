@@ -38,6 +38,21 @@ enum nf_nat_manip_type {
 #define IP_CT_ESTABLISHED 1
 #define IP_CT_RELATED 2
 #define IP_CT_NEW_REPLY 3
+
+struct nf_conn {
+    // Add only the fields you need to access
+    unsigned long timeout;
+    unsigned int status;
+    struct {
+        struct {
+            unsigned int state;
+            struct {
+                unsigned int flags;
+            } seen[2];
+            unsigned int last_dir;
+        } tcp;
+    } proto;
+};
 // clear this
 
 struct np_backends {
