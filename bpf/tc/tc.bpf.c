@@ -5,7 +5,7 @@
 #include <bpf/bpf_endian.h>
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
-#include <bpf/libbpf.h>
+#include <bpf/bpf.h>
 
 /* Set this flag to enable/ disable debug messages */
 #define DEBUG_ENABLED true
