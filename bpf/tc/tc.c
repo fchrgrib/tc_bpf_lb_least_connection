@@ -36,9 +36,9 @@ int main(int argc, char **argv)
         uint16_t nodeport;
 
         struct np_backends {
-			char service_name[32];
+            __u32    be1;
+            __u32    be2;
             __u16    targetPort;
-			__u16    pad;
         };
 
         struct np_backends backends;
@@ -61,19 +61,18 @@ int main(int argc, char **argv)
         }
 
 
-        // store service name from argv[3] to backends.service_name
-		strncpy(backends.service_name, argv[3], sizeof(backends.service_name) - 1);
-		backends.service_name[sizeof(backends.service_name) - 1] = '\0';
+        inet_aton(argv[3], (struct in_addr *)&(backends.be1));
+        inet_aton(argv[4], (struct in_addr *)&(backends.be2));
 
-		if (backends.service_name[0] == '\0') {
-			fprintf(stderr, "Service name cannot be empty\n");
-			return 1;
-		}
+        if (backends.be1 == 0  || backends.be2 == 0) {
+                fprintf(stderr, "Invalid backend IP values\n");
+                return 1;
+        }
  
-        if (argc < 5) 
+        if (argc < 6) 
             backends.targetPort = 80;
         else
-            backends.targetPort = atoi(argv[4]);
+            backends.targetPort = atoi(argv[5]);
 
 	DECLARE_LIBBPF_OPTS(bpf_tc_hook, tc_hook,
 		.ifindex = ifindex, .attach_point = BPF_TC_INGRESS);
