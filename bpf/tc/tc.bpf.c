@@ -16,42 +16,6 @@
 #define ETH_P_IP	0x0800		/* Internet Protocol packet	*/
 #define TEST_NODEPORT   ((unsigned short) 30080)
 
-// clear this
-// For nf_inet_addr
-union nf_inet_addr {
-    __u32 all[4];  // Access as addr.all[0] for IPv4
-    __u32 ip;      // IPv4 address
-    __u32 ip6[4];  // IPv6 address
-};
-
-// For nf_nat_manip_type
-enum nf_nat_manip_type {
-    NF_NAT_MANIP_SRC,
-    NF_NAT_MANIP_DST
-};
-
-// For connection tracking status
-#define IP_CT_NEW 0
-#define IP_CT_ESTABLISHED 1
-#define IP_CT_RELATED 2
-#define IP_CT_NEW_REPLY 3
-
-struct nf_conn {
-    // Add only the fields you need to access
-    unsigned long timeout;
-    unsigned int status;
-    struct {
-        struct {
-            unsigned int state;
-            struct {
-                unsigned int flags;
-            } seen[2];
-            unsigned int last_dir;
-        } tcp;
-    } proto;
-};
-// clear this
-
 struct np_backends {
         __be32 be1;
         __be32 be2;
@@ -93,8 +57,6 @@ void bpf_ct_set_timeout(struct nf_conn *nfct, u32 timeout) __ksym;
 int bpf_ct_set_status(const struct nf_conn *nfct, u32 status) __ksym;
 
 void bpf_ct_release(struct nf_conn *) __ksym;
-
-// int bpf_obj_get(const char *pathname) __ksym;
 
 // static __always_inline int nodeport_lb4(struct __sk_buff *ctx) {
 
@@ -206,24 +168,6 @@ int nodeport_lb4(struct __sk_buff *ctx) {
                     // Rudimentary load balancing for now based on received source port
 
                     union nf_inet_addr addr = {};
-
-                    // int svc_pod_ips = bpf_object_get("/sys/fs/bpf/svc_pod_ips");
-                    // if (svc_pod_ips < 0) {
-                    //     DEBUG_BPF_PRINTK("bpf_obj_get() failed\n")
-                    //     return TC_ACT_OK;
-                    // }
-                    // DEBUG_BPF_PRINTK("bpf_obj_get() returned fd %d\n", svc_pod_ips)
-
-                    // int hash_map = bpf_object_get("/sys/fs/bpf/hash_map");
-                    // if (hash_map < 0) {
-                    //     DEBUG_BPF_PRINTK("bpf_obj_get() failed\n")
-                    //     return TC_ACT_OK;
-                    // }
-                    // DEBUG_BPF_PRINTK("bpf_obj_get() returned fd %d\n", hash_map)
-
-
-                    // DEBUG_BPF_PRINTK("bpf_obj_get() returned fd %d\n", svc_pod_ips)
-                    // DEBUG_BPF_PRINTK("bpf_obj_get() returned fd %d\n", hash_map)
  
                     addr.ip = b1;
 
