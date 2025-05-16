@@ -61,14 +61,14 @@ int main(int argc, char **argv)
         }
 		int svc_pod_ips = bpf_obj_get("/sys/fs/bpf/svc_pod_ips");
 		if (svc_pod_ips < 0) {
-			fprintf("bpf_obj_get() failed\n")
+			printf("bpf_obj_get() failed\n");
 			return TC_ACT_OK;
 		}
-		fprintf("bpf_obj_get() returned fd %d\n", svc_pod_ips)
+		printf("bpf_obj_get() returned fd %d\n", svc_pod_ips);
 
 		int hash_map = bpf_obj_get("/sys/fs/bpf/hash_map");
 		if (hash_map < 0) {
-			fprintf("bpf_obj_get() failed\n")
+			printf("bpf_obj_get() failed\n");
 			return TC_ACT_OK;
 		}
 
