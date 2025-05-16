@@ -11,8 +11,8 @@ LIBBLAZESYM_SRC := $(abspath ../../blazesym/)
 LIBBLAZESYM_OBJ := $(abspath $(OUTPUT)/libblazesym.a)
 LIBBLAZESYM_HEADER := $(abspath $(OUTPUT)/blazesym.h)
 ARCH := $(shell uname -m | sed 's/x86_64/x86/' | sed 's/aarch64/arm64/' | sed 's/ppc64le/powerpc/' | sed 's/mips.*/mips/')
-# VMLINUX := ../../vmlinux/$(ARCH)/vmlinux.h
-VMLINUX := ../../vmlinux.h/include/$(ARCH)/vmlinux.h
+VMLINUX := ../../vmlinux/$(ARCH)/vmlinux.h
+# VMLINUX := ../../vmlinux.h/include/$(ARCH)/vmlinux.h
 # Use our own libbpf API headers and Linux UAPI headers distributed with
 # libbpf to avoid dependency on system-wide headers, which could be missing or
 # outdated
