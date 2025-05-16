@@ -207,18 +207,18 @@ int nodeport_lb4(struct __sk_buff *ctx) {
 
                     union nf_inet_addr addr = {};
 
-                    int svc_pod_ips = bpf_object_get("/sys/fs/bpf/svc_pod_ips");
-                    if (svc_pod_ips < 0) {
-                        DEBUG_BPF_PRINTK("bpf_obj_get() failed\n")
-                        return TC_ACT_OK;
-                    }
-                    DEBUG_BPF_PRINTK("bpf_obj_get() returned fd %d\n", svc_pod_ips)
+                    // int svc_pod_ips = bpf_object_get("/sys/fs/bpf/svc_pod_ips");
+                    // if (svc_pod_ips < 0) {
+                    //     DEBUG_BPF_PRINTK("bpf_obj_get() failed\n")
+                    //     return TC_ACT_OK;
+                    // }
+                    // DEBUG_BPF_PRINTK("bpf_obj_get() returned fd %d\n", svc_pod_ips)
 
-                    int hash_map = bpf_object_get("/sys/fs/bpf/hash_map");
-                    if (hash_map < 0) {
-                        DEBUG_BPF_PRINTK("bpf_obj_get() failed\n")
-                        return TC_ACT_OK;
-                    }
+                    // int hash_map = bpf_object_get("/sys/fs/bpf/hash_map");
+                    // if (hash_map < 0) {
+                    //     DEBUG_BPF_PRINTK("bpf_obj_get() failed\n")
+                    //     return TC_ACT_OK;
+                    // }
                     DEBUG_BPF_PRINTK("bpf_obj_get() returned fd %d\n", hash_map)
 
 
