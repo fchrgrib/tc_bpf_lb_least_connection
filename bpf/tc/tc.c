@@ -59,15 +59,18 @@ int main(int argc, char **argv)
                 fprintf(stderr, "Nodeport value must be in range <30000, 32000>\n");
                 return 1;
         }
-		int svc_pod_ips = bpf_obj_get("/sys/fs/bpf/svc_pod_ips");
+		int svc_pod_ips = bpf_obj_get("/sys/fs/bpf/service_pod_ips");
 		if (svc_pod_ips < 0) {
 			printf("bpf_obj_get() failed\n");
+		}else{
+			printf("bpf_obj_get() returned fd svc %d\n", svc_pod_ips);
 		}
-		printf("bpf_obj_get() returned fd %d\n", svc_pod_ips);
 
 		int hash_map = bpf_obj_get("/sys/fs/bpf/hash_map");
 		if (hash_map < 0) {
 			printf("bpf_obj_get() failed\n");
+		}else{
+			printf("bpf_obj_get() returned fd %d\n", hash_map);
 		}
 
 
