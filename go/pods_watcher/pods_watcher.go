@@ -27,12 +27,14 @@ const (
 )
 
 // eBPF map configuration
+// please pin the map to a file in /sys/fs/bpf/ for visibility
 var ebpfMapSpec = &ebpf.MapSpec{
 	Type:       ebpf.Hash,
-	KeySize:    32,   // Fixed size key
-	ValueSize:  16,   // IPv6 address size (works for IPv4 too)
-	MaxEntries: 100,  // Max pods we expect
+	KeySize:    32,  // Fixed size key
+	ValueSize:  16,  // IPv6 address size (works for IPv4 too)
+	MaxEntries: 100, // Max pods we expect
 	Name:       "service_pod_ips",
+	Pinning:    ebpf.PinByName,
 }
 
 func main() {
