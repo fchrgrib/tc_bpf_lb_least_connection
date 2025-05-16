@@ -18,15 +18,10 @@
 
 // clear this
 // For nf_inet_addr
-#include <linux/netfilter/nf_nat.h>
-#include <linux/netfilter/nf_conntrack.h>
 union nf_inet_addr {
-    __u32 ip;
-    __u32 ip6[4];
-    struct {
-        __u32 ip;
-        __u32 pad[3];
-    };
+    __u32 all[4];  // Access as addr.all[0] for IPv4
+    __u32 ip;      // IPv4 address
+    __u32 ip6[4];  // IPv6 address
 };
 
 // For nf_nat_manip_type
