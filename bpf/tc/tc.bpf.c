@@ -5,7 +5,6 @@
 #include <bpf/bpf_endian.h>
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
-#include <bpf/bpf_core_read.h>
 
 /* Set this flag to enable/ disable debug messages */
 #define DEBUG_ENABLED true
@@ -58,6 +57,8 @@ void bpf_ct_set_timeout(struct nf_conn *nfct, u32 timeout) __ksym;
 int bpf_ct_set_status(const struct nf_conn *nfct, u32 status) __ksym;
 
 void bpf_ct_release(struct nf_conn *) __ksym;
+
+int bpf_obj_get(const char *pathname) __ksym;
 
 // static __always_inline int nodeport_lb4(struct __sk_buff *ctx) {
 
