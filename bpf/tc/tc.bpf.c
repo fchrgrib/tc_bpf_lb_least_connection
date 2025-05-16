@@ -18,6 +18,8 @@
 
 // clear this
 // For nf_inet_addr
+#include <linux/netfilter/nf_nat.h>
+#include <linux/netfilter/nf_conntrack.h>
 union nf_inet_addr {
     __u32 ip;
     __u32 ip6[4];
