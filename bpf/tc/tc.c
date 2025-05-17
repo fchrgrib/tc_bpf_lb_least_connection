@@ -164,16 +164,24 @@ int main(int argc, char **argv)
 
 		while (bpf_map_get_next_key(svc_pod_ips, &key_ip, &next_key) == 0) {
 			printf("bpf_map_get_next_key() returned %s\n", next_key);
-			if (bpf_map_lookup_elem(svc_pod_ips, &next_key, &value_ip) != 0) {
-				if (bpf_map_lookup_elem(hash_map, &value_ip.ip_address, &value) != 0) {
-					if (value < min_conn) {
+			bpf_map_lookup_elem(svc_pod_ips, &next_key, &value_ip);
+
+			// Check if the IP address is valid
+			if (value_ip.ip_address != 0) {
+				printf("Valid IP address: %u\n", value_ip.ip_address);
+			} else {
+				printf("Invalid IP address: %u\n", value_ip.ip_address);
+			}
+			bpf_map_lookup_elem(hash_map, &value_ip.ip_address, &value);
+			// select the ip address if hash map not found
+			if(value == 0) {
+				selected_ip = value_ip.ip_address;
+				break;
+			}
+			if (value < min_conn) {
 						min_conn = value;
 						selected_ip = value_ip.ip_address;
-					}
-					printf("IP: %u, Connections: %u\n", value_ip.ip_address, value);
-				}
 			}
-			//print value_ip
 			printf("bpf_map_lookup_elem() returned %u\n", value_ip.ip_address);
 			memcpy(&key_ip, &next_key, sizeof(key_ip));
 		}
