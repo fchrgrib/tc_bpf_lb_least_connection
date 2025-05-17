@@ -48,7 +48,7 @@ func main() {
 
 	// Initialize eBPF map
 	podIPMap, err := ebpf.NewMapWithOptions(ebpfMapSpec, ebpf.MapOptions{
-		PinPath: fmt.Sprintf("/sys/fs/bpf"),
+		PinPath: "/sys/fs/bpf",
 	})
 	if err != nil {
 		log.Fatalf("Failed to create eBPF map: %v", err)
