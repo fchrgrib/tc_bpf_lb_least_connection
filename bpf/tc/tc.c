@@ -152,7 +152,10 @@ int main(int argc, char **argv)
 		}
 
 		char key_ip[32] = {0}, next_key[32] = {0};
-		struct pod_ip_value value_ip = {0};
+		struct pod_ip_value {
+			__u64 some_field;
+			__u32 ip_address;
+		} value_ip = {0}; value_ip = {0};
 		__u32 value = 0;
 		__u32 min_conn = ~0;
 		__u32 selected_ip = 0;
