@@ -164,7 +164,7 @@ int main(int argc, char **argv)
 				key_ip = next_key;
 				continue;
 			}
-			bpf_map_lookup_elem(hash_map, &value_ip, &value)
+			bpf_map_lookup_elem(hash_map, &value_ip, &value);
 			if (value == 0) {
 				printf("bpf_map_lookup_elem() failed\n");
 				key_ip = next_key;
