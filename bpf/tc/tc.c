@@ -101,7 +101,7 @@ int main(int argc, char **argv)
 					printf("key %u next_key %u value_ip %u value %u\n", key_ip, next_key, value_ip, value);
 				}
 			}
-			key = next_key;
+			key_ip = next_key;
 		}
 
 		key_ip = 0;
