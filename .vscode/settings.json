@@ -3,6 +3,7 @@
         "tracepoint.h": "c",
         "bpf_tracing.h": "c",
         "bpf_core_read.h": "c",
-        "nf_nat.h": "c"
+        "nf_nat.h": "c",
+        "bpf.h": "c"
     }
 }

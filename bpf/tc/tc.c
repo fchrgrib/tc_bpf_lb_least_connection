@@ -5,6 +5,7 @@
 #include <unistd.h>
 #include "tc.skel.h"
 #include <bpf/libbpf.h>
+#include <bpf/bpf.h>
 
 
 #include <net/if.h>
@@ -66,45 +67,54 @@ int main(int argc, char **argv)
 			printf("bpf_obj_get() returned fd svc %d\n", svc_pod_ips);
 		}
 
+		int svc_pod_ips = bpf_obj_get("/sys/fs/bpf/service_pod_ips");
+		if (svc_pod_ips < 0) {
+			printf("bpf_obj_get() failed for service_pod_ips\n");
+		} else {
+			printf("bpf_obj_get() returned fd svc %d\n", svc_pod_ips);
+		}
+
 		int hash_map = bpf_obj_get("/sys/fs/bpf/hash_map");
 		if (hash_map < 0) {
-			printf("bpf_obj_get() failed\n");
-		}else{
+			printf("bpf_obj_get() failed for hash_map\n");
+		} else {
 			printf("bpf_obj_get() returned fd %d\n", hash_map);
 		}
 
 		int selected_backend = bpf_obj_get("/sys/fs/bpf/selected_backend");
 		if (selected_backend < 0) {
-			printf("bpf_obj_get() failed\n");
-		}else{
+			printf("bpf_obj_get() failed for selected_backend\n");
+		} else {
 			printf("bpf_obj_get() returned fd %d\n", selected_backend);
 		}
 
 		__u32 min_conn = ~0;
 		__u32 selected_ip = 0;
-		__u32 key, next_key, value_ip, value;
+		__u32 key_ip = 0, next_key = 0, value_ip = 0, value = 0;
 
-		while(bpf_map__get_next_key(svc_pod_ips, &key, &next_key) == 0) {
-			bpf_map__lookup_elem(svc_pod_ips, &key, &value_ip);
-			bpf_map__lookup_elem(hash_map, &value_ip, &value);
-			if (value == 0) {
-				selected_ip = value_ip;
-				break;
+		// Use the bpf_map_* functions (not bpf_map__*) when working with file descriptors
+		while (bpf_map_get_next_key(svc_pod_ips, &key_ip, &next_key) == 0) {
+			if (bpf_map_lookup_elem(svc_pod_ips, &next_key, &value_ip) == 0) {
+				if (bpf_map_lookup_elem(hash_map, &value_ip, &value) == 0) {
+					if (value == 0) {
+						selected_ip = value_ip;
+						break;
+					}
+					if (value < min_conn) {
+						min_conn = value;
+						selected_ip = value_ip;
+					}
+					printf("key %u next_key %u value_ip %u value %u\n", key_ip, next_key, value_ip, value);
+				}
 			}
-			if (value < min_conn) {
-				min_conn = value;
-				selected_ip = value_ip;
-			}
-			printf("key %u next_key %u value_ip %u value %u\n", key, next_key, value_ip, value);
+			key = next_key;
 		}
 
-		key = 0;
-		if(bpf_map__update_elem(selected_backend, &key, sizeof(key), 
-													   &selected_ip, sizeof(selected_ip),
-													   BPF_ANY) < 0) {
-			printf("bpf_map__update_elem() failed\n");
-		}else{
-			printf("bpf_map__update_elem() returned selected_ip %u\n", selected_ip);
+		key_ip = 0;
+		if (bpf_map_update_elem(selected_backend, &key_ip, &selected_ip, BPF_ANY) < 0) {
+			printf("bpf_map_update_elem() failed\n");
+		} else {
+			printf("bpf_map_update_elem() returned selected_ip %u\n", selected_ip);
 		}
 
         inet_aton(argv[3], (struct in_addr *)&(backends.be1));
