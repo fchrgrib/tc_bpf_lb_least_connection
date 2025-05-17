@@ -158,8 +158,13 @@ int main(int argc, char **argv)
 		// Use the bpf_map_* functions (not bpf_map__*) when working with file descriptors
 		while (bpf_map_get_next_key(svc_pod_ips, &key_ip, &next_key) == 0) {
 			printf("key_ip %u next_key %u\n", key_ip, next_key);
-			if (bpf_map_lookup_elem(svc_pod_ips, &next_key, &value_ip) == 0) {
-				if (bpf_map_lookup_elem(hash_map, &value_ip, &value) == 0) {
+			bpf_map_lookup_elem(svc_pod_ips, &next_key, &value_ip)
+			if( value_ip == 0) {
+				printf("bpf_map_lookup_elem() failed\n");
+				key_ip = next_key;
+				continue;
+			}
+			if (bpf_map_lookup_elem(hash_map, &value_ip, &value) == 0) {
 					if (value == 0) {
 						selected_ip = value_ip;
 						break;
@@ -169,9 +174,7 @@ int main(int argc, char **argv)
 						selected_ip = value_ip;
 					}
 					printf("key %u next_key %u value_ip %u value %u\n", key_ip, next_key, value_ip, value);
-				}
 			}
-			printf("key_ip %u next_key %u value_ip %u\n", key_ip, next_key, value_ip);
 			key_ip = next_key;
 		}
 
