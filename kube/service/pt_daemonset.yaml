@@ -30,7 +30,7 @@ spec:
         securityContext:
           capabilities:
             add: ["BPF", "NET_ADMIN", "SYS_ADMIN"]
-          privileged: false 
+          privileged: true
         env:
         - name: USE_INCLUSTER_CONFIG 
           value: "true"
