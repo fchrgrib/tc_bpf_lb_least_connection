@@ -155,7 +155,7 @@ int main(int argc, char **argv)
 		struct pod_ip_value {
 			__u64 some_field;
 			__u32 ip_address;
-		} value_ip = {0}; value_ip = {0};
+		} value_ip = {0};
 		__u32 value = 0;
 		__u32 min_conn = ~0;
 		__u32 selected_ip = 0;
@@ -173,8 +173,8 @@ int main(int argc, char **argv)
 			memcpy(&key_ip, &next_key, sizeof(key_ip));
 		}
 
-		key_ip = 0;
-		if (bpf_map__update_elem(skel->maps.selected, &key_ip, sizeof(key_ip), &selected_ip, sizeof(selected_ip), BPF_ANY) < 0) {
+		int key_selected = 0;
+		if (bpf_map__update_elem(skel->maps.selected, &key_selected, sizeof(key_selected), &selected_ip, sizeof(selected_ip), BPF_ANY) < 0) {
 			printf("bpf_map_update_elem() failed\n");
 		} else {
 			printf("bpf_map_update_elem() returned selected_ip %u\n", selected_ip);
