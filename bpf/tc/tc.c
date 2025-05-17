@@ -161,8 +161,8 @@ int main(int argc, char **argv)
 		__u32 selected_ip = 0;
 
 		while (bpf_map_get_next_key(svc_pod_ips, &key_ip, &next_key) == 0) {
-			if (bpf_map_lookup_elem(svc_pod_ips, &next_key, &value_ip) == 0) {
-				if (bpf_map_lookup_elem(hash_map, &value_ip.ip_address, &value) == 0) {
+			if (bpf_map_lookup_elem(svc_pod_ips, &next_key, &value_ip) != 0) {
+				if (bpf_map_lookup_elem(hash_map, &value_ip.ip_address, &value) != 0) {
 					if (value < min_conn) {
 						min_conn = value;
 						selected_ip = value_ip.ip_address;
