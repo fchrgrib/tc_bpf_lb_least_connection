@@ -157,6 +157,7 @@ int main(int argc, char **argv)
 
 		// Use the bpf_map_* functions (not bpf_map__*) when working with file descriptors
 		while (bpf_map_get_next_key(svc_pod_ips, &key_ip, &next_key) == 0) {
+			printf("key_ip %u next_key %u\n", key_ip, next_key);
 			if (bpf_map_lookup_elem(svc_pod_ips, &next_key, &value_ip) == 0) {
 				printf("key_ip %u next_key %u value_ip %u\n", key_ip, next_key, value_ip);
 				if (bpf_map_lookup_elem(hash_map, &value_ip, &value) == 0) {
