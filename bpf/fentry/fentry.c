@@ -28,7 +28,8 @@ struct {
   __uint(type, BPF_MAP_TYPE_HASH);
   __type(key, int);
   __type(value, int);
-  __uint(max_entries, 10240);
+  __uint(max_entries, 10240); // pin this by name
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
 } hash_map SEC(".maps");
 
 #define MEM_READ(P)                                                            \
