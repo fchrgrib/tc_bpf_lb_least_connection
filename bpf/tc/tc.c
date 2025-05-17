@@ -153,9 +153,11 @@ int main(int argc, char **argv)
 
 		char key_ip[32] = {0}, next_key[32] = {0};
 		struct pod_ip_value {
-			__u64 some_field;
-			__u32 ip_address;
-		} value_ip = {0};
+			__u64 unused1;      // First 8 bytes (00 00 00 00 00 00 00 00)
+			__u16 unused2;      // Next 2 bytes (00 00)
+			__u16 network_flags;// Next 2 bytes (ff ff) - possibly flags?
+			__u32 ip_address;   // Last 4 bytes (0a 20 00 02) - IP in network byte order
+		}  value_ip = {0};
 		__u32 value = 0;
 		__u32 min_conn = ~0;
 		__u32 selected_ip = 0;
