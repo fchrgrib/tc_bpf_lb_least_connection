@@ -27,7 +27,6 @@ const (
 )
 
 // eBPF map configuration
-// please pin the map to a file in /sys/fs/bpf/ for visibility
 var ebpfMapSpec = &ebpf.MapSpec{
 	Type:       ebpf.Hash,
 	KeySize:    32,  // Fixed size key
@@ -48,7 +47,9 @@ func main() {
 	}()
 
 	// Initialize eBPF map
-	podIPMap, err := ebpf.NewMap(ebpfMapSpec)
+	podIPMap, err := ebpf.NewMapWithOptions(ebpfMapSpec, ebpf.MapOptions{
+		PinPath: fmt.Sprintf("/sys/fs/bpf"),
+	})
 	if err != nil {
 		log.Fatalf("Failed to create eBPF map: %v", err)
 	}

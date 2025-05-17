@@ -73,6 +73,39 @@ int main(int argc, char **argv)
 			printf("bpf_obj_get() returned fd %d\n", hash_map);
 		}
 
+		int selected_backend = bpf_obj_get("/sys/fs/bpf/selected_backend");
+		if (selected_backend < 0) {
+			printf("bpf_obj_get() failed\n");
+		}else{
+			printf("bpf_obj_get() returned fd %d\n", selected_backend);
+		}
+
+		__u32 min_conn = ~0;
+		__u32 selected_ip = 0;
+		__u32 key, next_key, value_ip, value;
+
+		while(bpf_map__get_next_key(svc_pod_ips, &key, &next_key) == 0) {
+			bpf_map__lookup_elem(svc_pod_ips, &key, &value_ip);
+			bpf_map__lookup_elem(hash_map, &value_ip, &value);
+			if (value == 0) {
+				selected_ip = value_ip;
+				break;
+			}
+			if (value < min_conn) {
+				min_conn = value;
+				selected_ip = value_ip;
+			}
+			printf("key %u next_key %u value_ip %u value %u\n", key, next_key, value_ip, value);
+		}
+
+		key = 0;
+		if(bpf_map__update_elem(selected_backend, &key, sizeof(key), 
+													   &selected_ip, sizeof(selected_ip),
+													   BPF_ANY) < 0) {
+			printf("bpf_map__update_elem() failed\n");
+		}else{
+			printf("bpf_map__update_elem() returned selected_ip %u\n", selected_ip);
+		}
 
         inet_aton(argv[3], (struct in_addr *)&(backends.be1));
         inet_aton(argv[4], (struct in_addr *)&(backends.be2));

@@ -22,6 +22,14 @@ struct np_backends {
         __u16 targetPort;
 };
 
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __type(key, __u32);        // Always 0
+    __type(value, __u32);      // Selected backend IP
+    __uint(max_entries, 1);
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
+} selected_backend SEC(".maps");
+
 /* Simplified map definition for initial POC */
 struct {
         __uint(type, BPF_MAP_TYPE_HASH);
@@ -168,11 +176,15 @@ int nodeport_lb4(struct __sk_buff *ctx) {
                     // Rudimentary load balancing for now based on received source port
 
                     union nf_inet_addr addr = {};
- 
-                    addr.ip = b1;
 
-                    if (bpf_htons(bpf_tuple.ipv4.sport) % 2) {
-                        addr.ip = b2;
+                    __u32 key = 0;
+                    __u32 *selected = bpf_map_lookup_elem(&selected_backend, &key);
+                    if (selected) {
+                        DEBUG_BPF_PRINTK("Selected backend IP 0x%X\n", *selected)
+                        addr.ip = *selected;
+                    } else {
+                        DEBUG_BPF_PRINTK("No selected backend IP, using BE1 0x%X\n", b1)
+                        addr.ip = b1;
                     }
 
                     /* Add DNAT info */
