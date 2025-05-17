@@ -164,17 +164,18 @@ int main(int argc, char **argv)
 				key_ip = next_key;
 				continue;
 			}
-			if (bpf_map_lookup_elem(hash_map, &value_ip, &value) == 0) {
-					if (value == 0) {
-						selected_ip = value_ip;
-						break;
-					}
-					if (value < min_conn) {
+			bpf_map_lookup_elem(hash_map, &value_ip, &value)
+			if (value == 0) {
+				printf("bpf_map_lookup_elem() failed\n");
+				key_ip = next_key;
+				selected_ip = value_ip;
+				continue;
+			}
+			if (value < min_conn) {
 						min_conn = value;
 						selected_ip = value_ip;
-					}
-					printf("key %u next_key %u value_ip %u value %u\n", key_ip, next_key, value_ip, value);
 			}
+			printf("bpf_map_lookup_elem() returned value %u\n", value);
 			key_ip = next_key;
 		}
 
