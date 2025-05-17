@@ -105,49 +105,6 @@ int main(int argc, char **argv)
 		goto cleanup;
 	}
 
-	int svc_pod_ips = bpf_obj_get("/sys/fs/bpf/service_pod_ips");
-	if (svc_pod_ips < 0) {
-		printf("bpf_obj_get() failed for service_pod_ips\n");
-	} else {
-		printf("bpf_obj_get() returned fd svc %d\n", svc_pod_ips);
-	}
-
-	int hash_map = bpf_obj_get("/sys/fs/bpf/hash_map");
-	if (hash_map < 0) {
-		printf("bpf_obj_get() failed for hash_map\n");
-	} else {
-		printf("bpf_obj_get() returned fd %d\n", hash_map);
-	}
-
-	__u32 min_conn = ~0;
-	__u32 selected_ip = 0;
-	__u32 key_ip = 0, next_key = 0, value_ip = 0, value = 0;
-
-	// Use the bpf_map_* functions (not bpf_map__*) when working with file descriptors
-	while (bpf_map_get_next_key(svc_pod_ips, &key_ip, &next_key) == 0) {
-		if (bpf_map_lookup_elem(svc_pod_ips, &next_key, &value_ip) == 0) {
-			if (bpf_map_lookup_elem(hash_map, &value_ip, &value) == 0) {
-				if (value == 0) {
-					selected_ip = value_ip;
-					break;
-				}
-				if (value < min_conn) {
-					min_conn = value;
-					selected_ip = value_ip;
-				}
-				printf("key %u next_key %u value_ip %u value %u\n", key_ip, next_key, value_ip, value);
-			}
-		}
-		key_ip = next_key;
-	}
-
-	key_ip = 0;
-	if (bpf_map__update_elem(skel->maps.selected, &key_ip, sizeof(key_ip), &selected_ip, sizeof(selected_ip), BPF_ANY) < 0) {
-		printf("bpf_map_update_elem() failed\n");
-	} else {
-		printf("bpf_map_update_elem() returned selected_ip %u\n", selected_ip);
-	}
-
 	/* The hook (i.e. qdisc) may already exists because:
 	 *   1. it is created by other processes or users
 	 *   2. or since we are attaching to the TC ingress ONLY,
@@ -180,6 +137,48 @@ int main(int argc, char **argv)
 
 	while (!exiting) {
 		fprintf(stderr, ".");
+		int svc_pod_ips = bpf_obj_get("/sys/fs/bpf/service_pod_ips");
+		if (svc_pod_ips < 0) {
+			printf("bpf_obj_get() failed for service_pod_ips\n");
+		} else {
+			printf("bpf_obj_get() returned fd svc %d\n", svc_pod_ips);
+		}
+
+		int hash_map = bpf_obj_get("/sys/fs/bpf/hash_map");
+		if (hash_map < 0) {
+			printf("bpf_obj_get() failed for hash_map\n");
+		} else {
+			printf("bpf_obj_get() returned fd %d\n", hash_map);
+		}
+
+		__u32 min_conn = ~0;
+		__u32 selected_ip = 0;
+		__u32 key_ip = 0, next_key = 0, value_ip = 0, value = 0;
+
+		// Use the bpf_map_* functions (not bpf_map__*) when working with file descriptors
+		while (bpf_map_get_next_key(svc_pod_ips, &key_ip, &next_key) == 0) {
+			if (bpf_map_lookup_elem(svc_pod_ips, &next_key, &value_ip) == 0) {
+				if (bpf_map_lookup_elem(hash_map, &value_ip, &value) == 0) {
+					if (value == 0) {
+						selected_ip = value_ip;
+						break;
+					}
+					if (value < min_conn) {
+						min_conn = value;
+						selected_ip = value_ip;
+					}
+					printf("key %u next_key %u value_ip %u value %u\n", key_ip, next_key, value_ip, value);
+				}
+			}
+			key_ip = next_key;
+		}
+
+		key_ip = 0;
+		if (bpf_map__update_elem(skel->maps.selected, &key_ip, sizeof(key_ip), &selected_ip, sizeof(selected_ip), BPF_ANY) < 0) {
+			printf("bpf_map_update_elem() failed\n");
+		} else {
+			printf("bpf_map_update_elem() returned selected_ip %u\n", selected_ip);
+		}
 		sleep(1);
 	}
 
