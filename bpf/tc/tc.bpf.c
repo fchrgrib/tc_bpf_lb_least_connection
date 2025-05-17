@@ -28,7 +28,7 @@ struct {
     __type(value, __u32);      // Selected backend IP
     __uint(max_entries, 1);
     __uint(pinning, LIBBPF_PIN_BY_NAME);
-} selected_backend SEC(".maps");
+} selected SEC(".maps");
 
 /* Simplified map definition for initial POC */
 struct {
@@ -178,10 +178,10 @@ int nodeport_lb4(struct __sk_buff *ctx) {
                     union nf_inet_addr addr = {};
 
                     __u32 key = 0;
-                    __u32 *selected = bpf_map_lookup_elem(&selected_backend, &key);
-                    if (selected) {
-                        DEBUG_BPF_PRINTK("Selected backend IP 0x%X\n", *selected)
-                        addr.ip = *selected;
+                    __u32 *selected_backend = bpf_map_lookup_elem(&selected, &key);
+                    if (selected_backend) {
+                        DEBUG_BPF_PRINTK("Selected backend IP 0x%X\n", *selected_backend)
+                        addr.ip = *selected_backend;
                     } else {
                         DEBUG_BPF_PRINTK("No selected backend IP, using BE1 0x%X\n", b1)
                         addr.ip = b1;
