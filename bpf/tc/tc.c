@@ -175,7 +175,8 @@ int main(int argc, char **argv)
 						min_conn = value;
 						selected_ip = value_ip;
 			}
-			printf("bpf_map_lookup_elem() returned value %u\n", value);
+			// print value_ip and value
+			printf("value_ip %u value %u\n", value_ip, value);
 			key_ip = next_key;
 		}
 
