@@ -142,7 +142,7 @@ int main(int argc, char **argv)
 	}
 
 	key_ip = 0;
-	if (bpf_map_update_elem(skel->map.selected_backend, &key_ip, &selected_ip, BPF_ANY) < 0) {
+	if (bpf_map_update_elem(skel->maps.selected_backend, &key_ip, &selected_ip, BPF_ANY) < 0) {
 		printf("bpf_map_update_elem() failed\n");
 	} else {
 		printf("bpf_map_update_elem() returned selected_ip %u\n", selected_ip);
