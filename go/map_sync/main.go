@@ -2,7 +2,6 @@ package main
 
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go -target amd64 -type Config fentry ../../bpf/fentry/fentry.c -cflags "-I../../vmlinux.h/include/x86"
 
-
 import (
 	"context"
 	"flag"
@@ -79,7 +78,12 @@ func main() {
 	}
 
 	fentryObjs := fentryObjects{}
-	if err := loadFentryObjects(&fentryObjs, nil); err != nil {
+	opts := &ebpf.CollectionOptions{
+		Maps: ebpf.MapOptions{
+			PinPath: "/sys/fs/bpf", // Change to your desired pin path
+		},
+	}
+	if err := loadFentryObjects(&fentryObjs, opts); err != nil {
 		log.Fatal(err)
 	}
 	defer fentryObjs.Close()
@@ -176,7 +180,7 @@ func main() {
 						log.Printf("Value: %d", e.Value)
 					}
 					ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-					
+
 					key := uint32(e.Key)
 					value := uint32(e.Value)
 
