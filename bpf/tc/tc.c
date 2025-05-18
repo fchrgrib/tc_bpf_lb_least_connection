@@ -198,10 +198,10 @@ int main(int argc, char **argv)
 
 	tc_opts.flags = tc_opts.prog_fd = tc_opts.prog_id = 0;
 	err = bpf_tc_detach(&tc_hook, &tc_opts);
+	close(svc_pod_ips);
+	close(hash_map);
 	if (err) {
 		fprintf(stderr, "Failed to detach TC: %d\n", err);
-		close(svc_pod_ips);
-		close(hash_map);
 		goto cleanup;
 	}
 
