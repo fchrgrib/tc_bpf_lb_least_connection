@@ -134,22 +134,23 @@ int main(int argc, char **argv)
 
 	printf("Successfully started! Please run `sudo cat /sys/kernel/debug/tracing/trace_pipe` "
 	       "to see output of the BPF program.\n");
+	
+	int svc_pod_ips = bpf_obj_get("/sys/fs/bpf/service_pod_ips");
+	if (svc_pod_ips < 0) {
+		printf("bpf_obj_get() failed for service_pod_ips\n");
+	} else {
+		printf("bpf_obj_get() returned fd svc %d\n", svc_pod_ips);
+	}
+
+	int hash_map = bpf_obj_get("/sys/fs/bpf/hash_map");
+	if (hash_map < 0) {
+		printf("bpf_obj_get() failed for hash_map\n");
+	} else {
+		printf("bpf_obj_get() returned fd %d\n", hash_map);
+	}
 
 	while (!exiting) {
 		fprintf(stderr, ".");
-		int svc_pod_ips = bpf_obj_get("/sys/fs/bpf/service_pod_ips");
-		if (svc_pod_ips < 0) {
-			printf("bpf_obj_get() failed for service_pod_ips\n");
-		} else {
-			printf("bpf_obj_get() returned fd svc %d\n", svc_pod_ips);
-		}
-
-		int hash_map = bpf_obj_get("/sys/fs/bpf/hash_map");
-		if (hash_map < 0) {
-			printf("bpf_obj_get() failed for hash_map\n");
-		} else {
-			printf("bpf_obj_get() returned fd %d\n", hash_map);
-		}
 
 		char key_ip[32] = {0}, next_key[32] = {0};
 		struct pod_ip_value {
@@ -199,6 +200,8 @@ int main(int argc, char **argv)
 	err = bpf_tc_detach(&tc_hook, &tc_opts);
 	if (err) {
 		fprintf(stderr, "Failed to detach TC: %d\n", err);
+		close(svc_pod_ips);
+		close(hash_map);
 		goto cleanup;
 	}
 
