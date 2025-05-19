@@ -188,11 +188,11 @@ int main(int argc, char **argv)
 		}
 
 		int key_selected = 0;
-		// if (bpf_map__update_elem(skel->maps.selected, &key_selected, sizeof(key_selected), &selected_ip, sizeof(selected_ip), BPF_ANY) < 0) {
-		// 	printf("bpf_map_update_elem() failed\n");
-		// } else {
-		// 	printf("bpf_map_update_elem() returned selected_ip %u\n", selected_ip);
-		// }
+		if (bpf_map__update_elem(skel->maps.selected, &key_selected, sizeof(key_selected), &selected_ip, sizeof(selected_ip), BPF_ANY) < 0) {
+			printf("bpf_map_update_elem() failed\n");
+		} else {
+			printf("bpf_map_update_elem() returned selected_ip %u\n", selected_ip);
+		}
 		sleep(2);
 	}
 
