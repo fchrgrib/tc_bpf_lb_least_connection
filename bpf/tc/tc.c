@@ -193,7 +193,7 @@ int main(int argc, char **argv)
 		} else {
 			printf("bpf_map_update_elem() returned selected_ip %u\n", selected_ip);
 		}
-		sleep(0.5);
+		sleep(1);
 	}
 
 	tc_opts.flags = tc_opts.prog_fd = tc_opts.prog_id = 0;
