@@ -164,15 +164,15 @@ int main(int argc, char **argv)
 		__u32 selected_ip = 0;
 
 		while (bpf_map_get_next_key(svc_pod_ips, &key_ip, &next_key) == 0) {
-			printf("bpf_map_get_next_key() returned %s\n", next_key);
+			// printf("bpf_map_get_next_key() returned %s\n", next_key);
 			bpf_map_lookup_elem(svc_pod_ips, &next_key, &value_ip);
 
 			// Check if the IP address is valid
-			if (value_ip.ip_address != 0) {
-				printf("Valid IP address: %u\n", value_ip.ip_address);
-			} else {
-				printf("Invalid IP address: %u\n", value_ip.ip_address);
-			}
+			// if (value_ip.ip_address != 0) {
+			// 	printf("Valid IP address: %u\n", value_ip.ip_address);
+			// } else {
+			// 	printf("Invalid IP address: %u\n", value_ip.ip_address);
+			// }
 			bpf_map_lookup_elem(hash_map, &value_ip.ip_address, &value);
 			// select the ip address if hash map not found
 			if(value == 0) {
@@ -183,16 +183,16 @@ int main(int argc, char **argv)
 						min_conn = value;
 						selected_ip = value_ip.ip_address;
 			}
-			printf("bpf_map_lookup_elem() returned %u\n", value_ip.ip_address);
+			// printf("bpf_map_lookup_elem() returned %u\n", value_ip.ip_address);
 			memcpy(&key_ip, &next_key, sizeof(key_ip));
 		}
 
 		int key_selected = 0;
-		if (bpf_map__update_elem(skel->maps.selected, &key_selected, sizeof(key_selected), &selected_ip, sizeof(selected_ip), BPF_ANY) < 0) {
-			printf("bpf_map_update_elem() failed\n");
-		} else {
-			printf("bpf_map_update_elem() returned selected_ip %u\n", selected_ip);
-		}
+		// if (bpf_map__update_elem(skel->maps.selected, &key_selected, sizeof(key_selected), &selected_ip, sizeof(selected_ip), BPF_ANY) < 0) {
+		// 	printf("bpf_map_update_elem() failed\n");
+		// } else {
+		// 	printf("bpf_map_update_elem() returned selected_ip %u\n", selected_ip);
+		// }
 		sleep(2);
 	}
 

@@ -7,7 +7,7 @@
 #include <bpf/bpf_tracing.h>
 
 /* Set this flag to enable/ disable debug messages */
-#define DEBUG_ENABLED true
+#define DEBUG_ENABLED false
 
 #define DEBUG_BPF_PRINTK(...) if(DEBUG_ENABLED) {bpf_printk(__VA_ARGS__);}
 
