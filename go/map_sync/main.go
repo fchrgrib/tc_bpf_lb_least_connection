@@ -23,7 +23,14 @@ import (
 	"github.com/cilium/ebpf/rlimit"
 )
 
-var debug bool = false
+var debug bool
+var dbglog = log.New(os.Stdout, "[DEBUG] ", log.LstdFlags)
+
+func dlogf(format string, v ...any) {
+	if debug {
+		dbglog.Printf(format, v...)
+	}
+}
 
 var kasp = keepalive.ServerParameters{
 	MaxConnectionIdle: 30 * time.Second,
@@ -41,12 +48,13 @@ func (n *Node) SetValue(ctx context.Context, in *ValueRequest) (*Empty, error) {
 	key := in.GetKey()
 	_type := in.GetType()
 
-	if MapUpdater(_type).String() == "UPDATE" {
+	switch MapUpdater(_type).String() {
+	case "UPDATE":
 		n.fentryObjs.HashMap.Update(key, value, ebpf.UpdateAny)
-		log.Printf("Client updated key %d to value %d", key, value)
-	} else if MapUpdater(_type).String() == "DELETE" {
+		dlogf("Client updated key %d to value %d", key, value)
+	case "DELETE":
 		n.fentryObjs.HashMap.Delete(key)
-		log.Printf("Client deleted key %d", key)
+		dlogf("Client deleted key %d", key)
 	}
 
 	return &Empty{}, nil
@@ -70,8 +78,13 @@ func startServer(node *Node, port string) {
 func main() {
 	serverIP := flag.String("ip", "localhost", "Server IP address of the peer (to sync to)")
 	serverPort := flag.Int("port", 50051, "Current host listen port")
+	flag.BoolVar(&debug, "debug", false, "Enable debug logs")
 	flag.Parse()
 	address := *serverIP + ":" + fmt.Sprint(*serverPort)
+
+	if debug {
+		log.Println("Debug mode enabled")
+	}
 
 	if err := rlimit.RemoveMemlock(); err != nil {
 		log.Fatal(err)
@@ -80,7 +93,7 @@ func main() {
 	fentryObjs := fentryObjects{}
 	opts := &ebpf.CollectionOptions{
 		Maps: ebpf.MapOptions{
-			PinPath: "/sys/fs/bpf", // Change to your desired pin path
+			PinPath: "/sys/fs/bpf",
 		},
 	}
 	if err := loadFentryObjects(&fentryObjs, opts); err != nil {
@@ -122,13 +135,12 @@ func main() {
 	}
 	defer rd.Close()
 
-	// ---------------------- Batching setup ----------------------
 	eventChan := make(chan *MapData, 1000)
 	batchInterval := 2 * time.Second
 	var batch []*MapData
 	var mu = &sync.Mutex{}
 
-	// Ringbuf reader goroutine (producer)
+	// Ringbuf reader (producer)
 	go func() {
 		for {
 			record, err := rd.Read()
@@ -141,7 +153,7 @@ func main() {
 		}
 	}()
 
-	// Batch processor goroutine (consumer)
+	// Batch processor (consumer)
 	go func() {
 		ticker := time.NewTicker(batchInterval)
 		defer ticker.Stop()
@@ -171,14 +183,13 @@ func main() {
 				client := NewSyncServiceClient(conn)
 
 				for _, e := range toSend {
-					if debug {
-						log.Printf("Map ID: %d", e.MapID)
-						log.Printf("Name: %s", string(e.Name[:]))
-						log.Printf("PID: %d", e.PID)
-						log.Printf("Update Type: %s", e.UpdateType.String())
-						log.Printf("Key: %d", e.Key)
-						log.Printf("Value: %d", e.Value)
-					}
+					dlogf("Map ID: %d", e.MapID)
+					dlogf("Name: %s", string(e.Name[:]))
+					dlogf("PID: %d", e.PID)
+					dlogf("Update Type: %s", e.UpdateType.String())
+					dlogf("Key: %d", e.Key)
+					dlogf("Value: %d", e.Value)
+
 					ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 
 					key := uint32(e.Key)
@@ -188,15 +199,14 @@ func main() {
 					case "UPDATE":
 						if err := fentryObjs.HashMap.Update(&key, &value, ebpf.UpdateAny); err != nil {
 							log.Printf("Local update failed: %v", err)
-						} else if debug {
-							log.Printf("Locally updated key %d to value %d", key, value)
+						} else {
+							dlogf("Locally updated key %d to value %d", key, value)
 						}
-
 					case "DELETE":
 						if err := fentryObjs.HashMap.Delete(&key); err != nil {
 							log.Printf("Local delete failed: %v", err)
-						} else if debug {
-							log.Printf("Locally deleted key %d", key)
+						} else {
+							dlogf("Locally deleted key %d", key)
 						}
 					}
 
@@ -215,6 +225,5 @@ func main() {
 		}
 	}()
 
-	// Block main thread forever
-	select {}
+	select {} // block forever
 }
