@@ -23,7 +23,7 @@ import (
 	"github.com/cilium/ebpf/rlimit"
 )
 
-var debug bool = true
+var debug bool
 var dbglog = log.New(os.Stdout, "[DEBUG] ", log.LstdFlags)
 
 func dlogf(format string, v ...any) {
@@ -78,7 +78,7 @@ func startServer(node *Node, port string) {
 func main() {
 	serverIP := flag.String("ip", "localhost", "Server IP address of the peer (to sync to)")
 	serverPort := flag.Int("port", 50051, "Current host listen port")
-	flag.BoolVar(&debug, "debug", false, "Enable debug logs")
+	flag.BoolVar(&debug, "debug", true, "Enable debug logs")
 	flag.Parse()
 	address := *serverIP + ":" + fmt.Sprint(*serverPort)
 
