@@ -197,7 +197,7 @@ int nodeport_lb4(struct __sk_buff *ctx) {
 
                     __u32 *count_conn = bpf_map_lookup_elem(&hash_map, &addr.ip);
                     __u32 new_count = 0;
-                    int base = *count_conn;
+                    __u32 base = *count_conn;
 
                     if (count_conn) {
                         new_count = base + (base * 2) / 10;
