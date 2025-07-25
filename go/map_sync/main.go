@@ -23,7 +23,7 @@ import (
 	"github.com/cilium/ebpf/rlimit"
 )
 
-var debug bool
+var debug bool = true
 var dbglog = log.New(os.Stdout, "[DEBUG] ", log.LstdFlags)
 
 func dlogf(format string, v ...any) {
