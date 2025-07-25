@@ -199,7 +199,7 @@ int nodeport_lb4(struct __sk_buff *ctx) {
                     __u32 new_count = 0;
 
                     if (count_conn) {
-                        new_count = *count_conn + (*count_conn * 2) / 10;
+                        new_count = *count_conn + 1;
                         DEBUG_BPF_PRINTK("Current connection count for BE IP 0x%X: %u\n",
                                          addr.ip, new_count)
                     } else {
