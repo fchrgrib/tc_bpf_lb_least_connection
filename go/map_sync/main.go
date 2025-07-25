@@ -78,7 +78,7 @@ func startServer(node *Node, port string) {
 func main() {
 	serverIP := flag.String("ip", "localhost", "Server IP address of the peer (to sync to)")
 	serverPort := flag.Int("port", 50051, "Current host listen port")
-	flag.BoolVar(&debug, "debug", true, "Enable debug logs")
+	flag.BoolVar(&debug, "debug", false, "Enable debug logs")
 	flag.Parse()
 	address := *serverIP + ":" + fmt.Sprint(*serverPort)
 
@@ -136,7 +136,7 @@ func main() {
 	defer rd.Close()
 
 	eventChan := make(chan *MapData, 1000)
-	batchInterval := 5 * time.Second
+	batchInterval := 10 * time.Second
 	var batchMap = make(map[uint32]*MapData)
 	var mu = &sync.Mutex{}
 
