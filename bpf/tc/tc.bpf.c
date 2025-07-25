@@ -197,13 +197,14 @@ int nodeport_lb4(struct __sk_buff *ctx) {
 
                     __u32 *count_conn = bpf_map_lookup_elem(&hash_map, &addr.ip);
                     __u32 new_count = 0;
+                    int base = *count_conn;
 
                     if (count_conn) {
-                        new_count = *count_conn + (*count_conn * 2) / 10;
+                        new_count = base + (base * 2) / 10;
                         DEBUG_BPF_PRINTK("Current connection count for BE IP 0x%X: %u\n",
                                          addr.ip, new_count)
                     } else {
-                        new_count = 1;
+                        new_count = base;
                         DEBUG_BPF_PRINTK("No previous count for BE IP 0x%X, setting to %u\n",
                                          addr.ip, new_count)
                     }
