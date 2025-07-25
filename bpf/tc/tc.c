@@ -191,7 +191,7 @@ int main(int argc, char **argv)
 		if (bpf_map__update_elem(skel->maps.selected, &key_selected, sizeof(key_selected), &selected_ip, sizeof(selected_ip), BPF_ANY) < 0) {
 			printf("bpf_map_update_elem() failed\n");
 		} 
-		sleep(2);
+		sleep(1);
 	}
 
 	tc_opts.flags = tc_opts.prog_fd = tc_opts.prog_id = 0;

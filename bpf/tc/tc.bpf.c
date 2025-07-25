@@ -30,6 +30,14 @@ struct {
     __uint(pinning, LIBBPF_PIN_BY_NAME);
 } selected SEC(".maps");
 
+struct {
+  __uint(type, BPF_MAP_TYPE_HASH);
+  __type(key, int);
+  __type(value, int);
+  __uint(max_entries, 10240); // pin this by name
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+} hash_map SEC(".maps");
+
 /* Simplified map definition for initial POC */
 struct {
         __uint(type, BPF_MAP_TYPE_HASH);
@@ -186,6 +194,22 @@ int nodeport_lb4(struct __sk_buff *ctx) {
                         DEBUG_BPF_PRINTK("No selected backend IP, using BE1 0x%X\n", b1)
                         addr.ip = b1;
                     }
+
+                    __u32 *count_conn = bpf_map_lookup_elem(&hash_map, &addr.ip);
+                    __u32 new_count = 0;
+
+                    if (count_conn) {
+                        new_count = *count_conn + 0.2*(*count_conn);
+                        DEBUG_BPF_PRINTK("Current connection count for BE IP 0x%X: %u\n",
+                                         addr.ip, new_count)
+                    } else {
+                        new_count = 1;
+                        DEBUG_BPF_PRINTK("No previous count for BE IP 0x%X, setting to %u\n",
+                                         addr.ip, new_count)
+                    }
+
+                    bpf_map_update_elem(&hash_map, &addr.ip, &new_count, BPF_ANY);
+
 
                     /* Add DNAT info */
                     bpf_ct_set_nat_info(nct, &addr, lkup->targetPort, NF_NAT_MANIP_DST);
