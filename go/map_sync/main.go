@@ -136,7 +136,7 @@ func main() {
 	defer rd.Close()
 
 	eventChan := make(chan *MapData, 1000)
-	batchInterval := 2 * time.Second
+	batchInterval := 5 * time.Second
 	var batchMap = make(map[uint32]*MapData)
 	var mu = &sync.Mutex{}
 
