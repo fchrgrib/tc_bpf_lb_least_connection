@@ -137,7 +137,7 @@ func main() {
 
 	eventChan := make(chan *MapData, 1000)
 	batchInterval := 2 * time.Second
-	var batch []*MapData
+	var batchMap = make(map[uint32]*MapData)
 	var mu = &sync.Mutex{}
 
 	// Ringbuf reader (producer)
@@ -162,13 +162,16 @@ func main() {
 			select {
 			case ev := <-eventChan:
 				mu.Lock()
-				batch = append(batch, ev)
+				batchMap[ev.Key] = ev
 				mu.Unlock()
 
 			case <-ticker.C:
 				mu.Lock()
-				toSend := batch
-				batch = nil
+				toSend := make([]*MapData, 0, len(batchMap))
+				for _, v := range batchMap {
+					toSend = append(toSend, v)
+				}
+				batchMap = make(map[uint32]*MapData)
 				mu.Unlock()
 
 				if len(toSend) == 0 {
