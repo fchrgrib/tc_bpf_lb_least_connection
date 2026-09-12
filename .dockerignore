@@ -1,0 +1,15 @@
+# Keep build context small so `docker build` doesn't upload GBs (the slow part
+# before push even starts). tc-loader needs libbpf/bpftool/vmlinux headers;
+# everything else is excluded from the context.
+.git/
+.gitmodules
+.idea/
+.vscode/
+**/.output/
+**/target/
+**/*.o
+**/*.d
+go/
+kube/
+blazesym/target/
+vmlinux.h/docs/

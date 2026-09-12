@@ -14,9 +14,19 @@
 #   ONLY=tracker|loader  # rebuild/push just one image
 #   SKIP_PUSH=1    # build locally only (registry mirror / kind / preloaded nodes)
 #   NO_CACHE=1     # disable registry layer cache (default: cache on for fast rebuilds)
+#
+# Local LAN (no Docker Hub, e.g. 192.168.122.0/24):
+#   sudo ./kube/setup-local-registry.sh            # once, starts registry:2 on :5000
+#   LOCAL_REGISTRY=192.168.122.100:5000 ./kube/build-and-install.sh
+# Zero-registry fallback (scp tarballs + ctr import per node):
+#   ./kube/distribute-images.sh "192.168.122.101 192.168.122.102"
+#   SKIP_BUILD=1 REGISTRY=local ./kube/build-and-install.sh
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
+if [ -n "${LOCAL_REGISTRY:-}" ]; then
+  REGISTRY="$LOCAL_REGISTRY"  # LAN registry wins over Docker Hub default
+fi
 REGISTRY="${REGISTRY:-fchrgrib}"
 TRACKER_IMG="${TRACKER_IMG:-$REGISTRY/pod-ip-tracker:latest}"
 LOADER_IMG="${LOADER_IMG:-$REGISTRY/tc-lb-loader:latest}"
@@ -84,6 +94,10 @@ echo "==> Installing RBAC + DaemonSet from control-plane"
 kubectl apply -f "$ROOT/kube/service/pt_rbac.yaml"
 # DaemonSet keeps name/selector pod-ip-tracker so existing installs update in place.
 kubectl apply -f "$ROOT/kube/service/pt_daemonset.yaml"
+
+# Point the DaemonSet at the images we actually built (Hub default, LAN
+# registry, or preloaded `local/` names) — the yaml ships Hub defaults.
+kubectl set image ds/pod-ip-tracker -c tracker "$TRACKER_IMG" -c tc-loader "$LOADER_IMG" --namespace=default || true
 
 echo "==> Applying flexible service/port selection"
 kubectl set env ds/pod-ip-tracker -c tracker \

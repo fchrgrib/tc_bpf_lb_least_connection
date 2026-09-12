@@ -182,6 +182,28 @@ TRACKER_IMG=$REGISTRY/pod-ip-tracker:latest
 LOADER_IMG=$REGISTRY/tc-lb-loader:latest
 ```
 
+### Option B: local LAN, no Docker Hub (`192.168.122.0/24`)
+
+Pulls stay on your gigabit LAN. Recommended: a LAN registry on the
+control-plane (automatic pulls, including future nodes):
+
+```bash
+# 1. Once: start registry:2 on the control-plane (e.g. 192.168.122.100:5000)
+sudo ./kube/setup-local-registry.sh
+# 2. On EACH node, run the printed snippet (docker daemon.json OR containerd
+#    hosts.toml for insecure registry), restart docker/containerd.
+# 3. Build + push over LAN, DaemonSet is repointed automatically:
+LOCAL_REGISTRY=192.168.122.100:5000 ./kube/build-and-install.sh
+```
+
+Zero-registry fallback (no daemon changes, but manual per new node):
+
+```bash
+./kube/distribute-images.sh "192.168.122.101 192.168.122.102"  # scp + ctr import
+SKIP_BUILD=1 REGISTRY=local ./kube/build-and-install.sh        # uses preloaded images
+# New nodes joining later need distribute-images.sh re-run with their IP.
+```
+
 ### Option B: manual steps (same as script)
 
 ```bash
