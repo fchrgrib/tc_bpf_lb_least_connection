@@ -4,6 +4,58 @@ TC eBPF load balancer with least-connection selection, deployed as a Kubernetes
 `DaemonSet`. Install once from the control-plane — every current and future node
 gets the LB automatically, and removed nodes are cleaned up automatically.
 
+## What is this project for
+
+Kubernetes Services (`ClusterIP`/`NodePort` via kube-proxy iptables/IPVS) spread
+traffic round-robin/randomly. That is fine for short stateless requests, but bad
+when connections are **long-lived or uneven** (e.g. your Flask backends holding
+open connections, WebSockets, keep-alive APIs): one Pod can pile up connections
+while others sit idle.
+
+This project replaces that decision point **per node, inside the kernel**:
+
+1. `tracker` (`go/pods_watcher/`) watches your Service's ready Pod IPs through
+   the K8s API and keeps them in a pinned eBPF map
+   (`/sys/fs/bpf/service_pod_ips`) — always current as Pods scale/churn.
+2. The TC program (`bpf/tc/tc.bpf.c`) attaches at **ingress** on each node's
+   physical iface. For a new TCP/UDP flow to your `nodePort`, it DNATs the
+   packet to the currently least-loaded backend (plus SNAT/masquerade) using
+   kernel conntrack (`bpf_skb_ct_*`), so return traffic works with no userspace hop.
+3. The loader (`bpf/tc/tc.c`) re-evaluates every 2s: it reads live backend IPs
+   plus per-backend connection counts (`hash_map`, optionally synced across
+   nodes by `go/map_sync/` via fentry + gRPC) and writes the winner into the
+   `selected` map the datapath reads.
+
+In short: **any traffic hitting `<any-node-ip>:<nodePort>` gets steered in-kernel
+to whichever backend Pod currently holds the fewest connections.**
+
+## Benefits of installing it on your Services
+
+- **Least-connection instead of round-robin.** Busy Pods get fewer new flows,
+  idle Pods get more — higher throughput and fewer tail-latency spikes under
+  uneven load, without changing app code.
+- **Runs in kernel at TC ingress.** No extra userspace proxy (Envoy/HAProxy
+  sidecar) or external LB box in the path per packet — lower per-packet latency
+  and CPU than hopping through additional proxies.
+- **Per-node, no single choke point.** Every node makes the decision locally for
+  traffic it receives. Capacity grows with nodes, and there is no separate LB
+  tier to size, HA-configure, or pay a cloud provider for (useful on bare
+  metal / on-prem where `LoadBalancer` Services have no cloud implementation).
+- **Pod-churn aware.** Backend set follows the Service endpoints via API watch
+  (ready Pods only, 15-min resync as backup), so scaling your Deployment up/down
+  or rolling updates don't leave stale backends.
+- **Zero-touch scaling of the LB itself.** DaemonSet = new nodes self-install,
+  removed nodes self-clean (`SIGTERM` detach + `preStop` qdisc removal). One
+  manifest works for any Service/NodePort via env (`LB_SERVICE_NAME`,
+  `LB_NAMESPACE`, `LB_NODEPORT`, `LB_TARGET_PORT`).
+- **Cheap to try per Service.** Point it at one `NodePort` Service first
+  (e.g. the heaviest long-connection API), leave the rest on kube-proxy.
+
+Honest limits: one Service per DaemonSet install today, `NodePort` Services
+only, needs privileged Pods + a kernel with TC-BPF and `bpf_skb_ct_*` kfuncs,
+and cross-node count sync (`go/map_sync/`) is optional/extra setup — without it
+each node balances on its locally observed counts.
+
 ## How it works
 
 Two containers run together on **every node** via one DaemonSet
