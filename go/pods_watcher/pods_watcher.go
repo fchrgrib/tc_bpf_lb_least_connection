@@ -14,17 +14,23 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 )
 
 const (
-	serviceName    = "test-service"
-	deploymentName = "test-backend"
-	namespace      = "default"
-	mapKey         = "test_backend_ips" // Key for our eBPF map
+	mapKey = "test_backend_ips" // Key for our eBPF map
 )
+
+func getenv(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
 
 // eBPF map configuration
 var ebpfMapSpec = &ebpf.MapSpec{
@@ -37,6 +43,11 @@ var ebpfMapSpec = &ebpf.MapSpec{
 }
 
 func main() {
+	// Flexible: choose which Service to load-balance at install time.
+	// e.g. LB_SERVICE_NAME=my-api LB_NAMESPACE=prod
+	serviceName := getenv("LB_SERVICE_NAME", "test-service")
+	namespace := getenv("LB_NAMESPACE", "default")
+	log.Printf("Tracking service %s/%s", namespace, serviceName)
 	// Set up signal handling
 	stopCh := make(chan struct{})
 	sigCh := make(chan os.Signal, 1)
@@ -55,10 +66,18 @@ func main() {
 	}
 	defer podIPMap.Close()
 
-	// Initialize Kubernetes client
-	config, err := clientcmd.BuildConfigFromFlags("", os.Getenv("KUBECONFIG"))
+	// Initialize Kubernetes client.
+	// In-cluster first (DaemonSet), fallback to KUBECONFIG for local dev.
+	config, err := rest.InClusterConfig()
 	if err != nil {
-		log.Fatalf("Failed to build kubeconfig: %v", err)
+		kubeconfig := os.Getenv("KUBECONFIG")
+		if kubeconfig == "" {
+			kubeconfig = os.Getenv("HOME") + "/.kube/config"
+		}
+		config, err = clientcmd.BuildConfigFromFlags("", kubeconfig)
+		if err != nil {
+			log.Fatalf("Failed to build kubeconfig (in-cluster: %v): %v", err, err)
+		}
 	}
 
 	clientset, err := kubernetes.NewForConfig(config)
@@ -66,17 +85,24 @@ func main() {
 		log.Fatalf("Failed to create clientset: %v", err)
 	}
 
-	// Get service to find selector
+	// Get service to find selector (works with any selector keys, not just "app").
 	svc, err := clientset.CoreV1().Services(namespace).Get(context.TODO(), serviceName, metav1.GetOptions{})
 	if err != nil {
-		log.Fatalf("Failed to get service: %v", err)
+		log.Fatalf("Failed to get service %s/%s: %v", namespace, serviceName, err)
+	}
+	if len(svc.Spec.Selector) == 0 {
+		log.Fatalf("Service %s/%s has no selector, nothing to track", namespace, serviceName)
 	}
 
-	// Create selector from service
-	selector := fields.Set{"app": svc.Spec.Selector["app"]}.AsSelector()
+	// Create selector from the full service selector map.
+	selector, err := metav1.LabelSelectorAsSelector(&metav1.LabelSelector{MatchLabels: svc.Spec.Selector})
+	if err != nil {
+		log.Fatalf("Invalid selector on service %s/%s: %v", namespace, serviceName, err)
+	}
+	log.Printf("Using pod selector %q from service %s/%s", selector.String(), namespace, serviceName)
 
 	// Initial sync
-	if err := syncPodIPs(clientset, podIPMap, selector); err != nil {
+	if err := syncPodIPs(clientset, namespace, serviceName, podIPMap, selector); err != nil {
 		log.Fatalf("Initial sync failed: %v", err)
 	}
 
@@ -105,7 +131,7 @@ func main() {
 
 		case <-resyncTicker.C:
 			log.Println("Performing periodic resync...")
-			if err := syncPodIPs(clientset, podIPMap, selector); err != nil {
+			if err := syncPodIPs(clientset, namespace, serviceName, podIPMap, selector); err != nil {
 				log.Printf("Resync failed: %v", err)
 			}
 
@@ -126,7 +152,7 @@ func main() {
 
 			switch event.Type {
 			case watch.Added, watch.Modified, watch.Deleted:
-				if err := syncPodIPs(clientset, podIPMap, selector); err != nil {
+				if err := syncPodIPs(clientset, namespace, serviceName, podIPMap, selector); err != nil {
 					log.Printf("Failed to update eBPF map after %s event: %v", event.Type, err)
 				}
 			case watch.Error:
@@ -136,7 +162,7 @@ func main() {
 	}
 }
 
-func syncPodIPs(clientset *kubernetes.Clientset, podIPMap *ebpf.Map, selector fields.Selector) error {
+func syncPodIPs(clientset *kubernetes.Clientset, namespace, serviceName string, podIPMap *ebpf.Map, selector labels.Selector) error {
 	// Get current pods
 	pods, err := clientset.CoreV1().Pods(namespace).List(context.TODO(), metav1.ListOptions{
 		LabelSelector: selector.String(),

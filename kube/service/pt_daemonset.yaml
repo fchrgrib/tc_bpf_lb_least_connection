@@ -2,43 +2,128 @@ apiVersion: apps/v1
 kind: DaemonSet
 metadata:
   name: pod-ip-tracker
+  labels:
+    app: pod-ip-tracker
 spec:
   selector:
     matchLabels:
       app: pod-ip-tracker
+  # Roll out to new nodes automatically; keep existing nodes up during update.
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
   template:
     metadata:
       labels:
         app: pod-ip-tracker
     spec:
+      # Run on every node including new ones and control-plane.
+      # Old version used `nodeSelector: worker=true`, so unlabeled new nodes
+      # never got the LB. Tolerate everything instead.
       tolerations:
-      - key: node-role.kubernetes.io/control-plane
-        operator: Exists
-        effect: NoSchedule
-      - key: node-role.kubernetes.io/master
-        operator: Exists
-        effect: NoSchedule
-      
-      nodeSelector:
-        node-role.kubernetes.io/worker: "true"
-      
+      - operator: Exists
+      priorityClassName: system-node-critical
+      terminationGracePeriodSeconds: 30
       serviceAccountName: pod-ip-tracker
       hostNetwork: true
+      hostPID: true
+      dnsPolicy: ClusterFirstWithHostNet
+      initContainers:
+      # Ensure bpffs is mounted before tracker / tc-loader start.
+      - name: mount-bpf-fs
+        image: busybox:1.36
+        command:
+        - sh
+        - -c
+        - |
+          if ! mountpoint -q /sys/fs/bpf; then
+            mount -t bpf bpf /sys/fs/bpf || echo "bpffs mount failed, continuing";
+          fi
+          mkdir -p /sys/fs/bpf
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - name: bpf-fs
+          mountPath: /sys/fs/bpf
       containers:
+      # 1) Watches Pods/Services, maintains /sys/fs/bpf/service_pod_ips.
+      # Choose which Service to balance via LB_SERVICE_NAME / LB_NAMESPACE
+      # (no rebuild needed, just set env and restart the DaemonSet).
       - name: tracker
         image: fchrgrib/pod-ip-tracker:latest
+        imagePullPolicy: IfNotPresent
         securityContext:
-          capabilities:
-            add: ["BPF", "NET_ADMIN", "SYS_ADMIN"]
           privileged: true
+          capabilities:
+            add: ["BPF", "NET_ADMIN", "SYS_ADMIN", "SYS_RESOURCE"]
         env:
-        - name: USE_INCLUSTER_CONFIG 
+        - name: USE_INCLUSTER_CONFIG
           value: "true"
+        - name: LB_SERVICE_NAME
+          value: "test-service"
+        - name: LB_NAMESPACE
+          value: "default"
         volumeMounts:
         - name: lib-modules
           mountPath: /lib/modules
+          readOnly: true
         - name: bpf-fs
           mountPath: /sys/fs/bpf
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+      # 2) Attaches the TC eBPF program to the host iface.
+      # Runs alongside tracker on the SAME node, shares pinned maps.
+      - name: tc-loader
+        image: fchrgrib/tc-lb-loader:latest
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          privileged: true
+          capabilities:
+            add: ["BPF", "NET_ADMIN", "SYS_ADMIN", "SYS_RESOURCE"]
+        env:
+        # Empty LB_IFACE = auto-detect default route iface per node.
+        # LB_NODEPORT must match your Service's nodePort (any 1-65535).
+        # LB_TARGET_PORT must match backend containerPort / Service targetPort.
+        - name: LB_IFACE
+          value: ""
+        - name: LB_NODEPORT
+          value: "30080"
+        - name: LB_TARGET_PORT
+          value: "8000"
+        # Optional static fallbacks; "auto" = rely purely on the tracker map.
+        - name: LB_BE1
+          value: "auto"
+        - name: LB_BE2
+          value: "auto"
+        volumeMounts:
+        - name: lib-modules
+          mountPath: /lib/modules
+          readOnly: true
+        - name: bpf-fs
+          mountPath: /sys/fs/bpf
+        # On node drain/delete kubelet sends SIGTERM -> tc.c now handles
+        # SIGTERM and runs bpf_tc_detach. Give it time, then best-effort
+        # cleanup of the clsact qdisc left on the host iface.
+        lifecycle:
+          preStop:
+            exec:
+              command:
+              - sh
+              - -c
+              - |
+                IFACE="${LB_IFACE:-}";
+                if [ -z "$IFACE" ]; then
+                  IFACE=$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' | head -n1);
+                fi;
+                if [ -n "$IFACE" ]; then tc qdisc del dev "$IFACE" clsact 2>/dev/null || true; fi;
+                sleep 5;
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
       volumes:
       - name: lib-modules
         hostPath:
@@ -46,4 +131,4 @@ spec:
       - name: bpf-fs
         hostPath:
           path: /sys/fs/bpf
-          type: Directory
+          type: DirectoryOrCreate

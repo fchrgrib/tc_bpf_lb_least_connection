@@ -2,6 +2,7 @@
 /* Copyright (c) 2022 Hengqi Chen */
 /* Copyright (c) 2022 Red Hat */
 #include <signal.h>
+#include <string.h>
 #include <unistd.h>
 #include "tc.skel.h"
 #include <bpf/libbpf.h>
@@ -19,6 +20,7 @@ static volatile sig_atomic_t exiting = 0;
 
 static void sig_int(int signo)
 {
+	(void)signo;
 	exiting = 1;
 }
 
@@ -42,10 +44,13 @@ int main(int argc, char **argv)
             __u16    targetPort;
         };
 
-        struct np_backends backends;
+        struct np_backends backends = {0};
 
-        if (argc < 5) {
-                fprintf(stderr, "Usage: tc <interface_name> nodeport <be pod ip1> <be pod ip2> <targetPort>\n");
+        if (argc < 3) {
+                fprintf(stderr, "Usage: tc <interface_name> nodeport [be_pod_ip1] [be_pod_ip2] [targetPort]\n");
+                fprintf(stderr, "  nodeport: any 1-65535 (e.g. Service nodePort 30080, or any port you choose)\n");
+                fprintf(stderr, "  be IPs: optional fallback backends; use 0.0.0.0/auto to rely purely on\n");
+                fprintf(stderr, "          /sys/fs/bpf/service_pod_ips populated by pod-ip-tracker.\n");
                 return 1;
         }
 
@@ -56,22 +61,23 @@ int main(int argc, char **argv)
         }
 
         nodeport = atoi(argv[2]);
-        if (nodeport < 30000 || nodeport > 32000) {
-                fprintf(stderr, "Nodeport value must be in range <30000, 32000>\n");
+        if (nodeport < 1 || nodeport > 65535) {
+                fprintf(stderr, "Nodeport value must be in range <1, 65535>\n");
                 return 1;
         }
 
-		
+	/* Backend IPs are only fallbacks for svc_map; live IPs come from the
+	 * pinned service_pod_ips map. Accept 0.0.0.0 / auto / missing = dynamic-only. */
+        if (argc >= 4 && strcmp(argv[3], "auto") != 0)
+                inet_aton(argv[3], (struct in_addr *)&(backends.be1));
+        if (argc >= 5 && strcmp(argv[4], "auto") != 0)
+                inet_aton(argv[4], (struct in_addr *)&(backends.be2));
 
-        inet_aton(argv[3], (struct in_addr *)&(backends.be1));
-        inet_aton(argv[4], (struct in_addr *)&(backends.be2));
-
-        if (backends.be1 == 0  || backends.be2 == 0) {
-                fprintf(stderr, "Invalid backend IP values\n");
-                return 1;
+        if (backends.be1 == 0 && backends.be2 == 0) {
+                fprintf(stderr, "No static fallback backends given, using dynamic map only\n");
         }
- 
-        if (argc < 6) 
+
+        if (argc < 6)
             backends.targetPort = 80;
         else
             backends.targetPort = atoi(argv[5]);
@@ -96,13 +102,28 @@ int main(int argc, char **argv)
         /* hack # of backends hard coded to 2 for initial demo */
         __u16   key = nodeport;
 
-        err = bpf_map__update_elem(skel->maps.svc_map, &key, sizeof(key), 
+        err = bpf_map__update_elem(skel->maps.svc_map, &key, sizeof(key),
                                                        &backends, sizeof(backends),
-                                                       BPF_ANY); 
+                                                       BPF_ANY);
 	if (err ) {
 		fprintf(stderr, "Failed to update svc_map: %d\n", err);
 		fprintf(stderr, "continuing with default backend mappings \n");
 		goto cleanup;
+	}
+
+	/* Flexible nodeport: drop stale entries from previous installs
+	 * (e.g. user switched from 30080 to 31001) so old ports stop matching. */
+	{
+		__u16 cur = 0, next = 0;
+		__u16 first = 1;
+		while (bpf_map__get_next_key(skel->maps.svc_map, first ? NULL : &cur,
+					     &next, sizeof(next)) == 0) {
+			first = 0;
+			cur = next;
+			if (cur != key)
+				bpf_map__delete_elem(skel->maps.svc_map, &cur,
+						     sizeof(cur), 0);
+		}
 	}
 
 	/* The hook (i.e. qdisc) may already exists because:
@@ -126,7 +147,7 @@ int main(int argc, char **argv)
 		goto cleanup;
 	}
 
-	if (signal(SIGINT, sig_int) == SIG_ERR) {
+	if (signal(SIGINT, sig_int) == SIG_ERR || signal(SIGTERM, sig_int) == SIG_ERR) {
 		err = errno;
 		fprintf(stderr, "Can't set signal handler: %s\n", strerror(errno));
 		goto cleanup;
@@ -137,20 +158,40 @@ int main(int argc, char **argv)
 	
 	int svc_pod_ips = bpf_obj_get("/sys/fs/bpf/service_pod_ips");
 	if (svc_pod_ips < 0) {
-		printf("bpf_obj_get() failed for service_pod_ips\n");
+		printf("bpf_obj_get() failed for service_pod_ips, will retry (tracker may not be up yet)\n");
 	} else {
 		printf("bpf_obj_get() returned fd svc %d\n", svc_pod_ips);
 	}
 
 	int hash_map = bpf_obj_get("/sys/fs/bpf/hash_map");
 	if (hash_map < 0) {
-		printf("bpf_obj_get() failed for hash_map\n");
+		printf("bpf_obj_get() failed for hash_map, will retry\n");
 	} else {
 		printf("bpf_obj_get() returned fd %d\n", hash_map);
 	}
 
 	while (!exiting) {
 		fprintf(stderr, ".");
+
+		/* Re-open pinned maps if tracker started after us (common in DaemonSet). */
+		if (svc_pod_ips < 0) {
+			svc_pod_ips = bpf_obj_get("/sys/fs/bpf/service_pod_ips");
+			if (svc_pod_ips < 0) {
+				sleep(2);
+				continue;
+			}
+			printf("bpf_obj_get() returned fd svc %d (retry)\n", svc_pod_ips);
+		}
+		if (hash_map < 0) {
+			hash_map = bpf_obj_get("/sys/fs/bpf/hash_map");
+			if (hash_map < 0) {
+				/* hash_map is created by fentry/map_sync; least-conn still
+				 * works without it (all counts treated as 0). Don't block. */
+				hash_map = -1;
+			} else {
+				printf("bpf_obj_get() returned fd %d (retry)\n", hash_map);
+			}
+		}
 
 		char key_ip[32] = {0}, next_key[32] = {0};
 		struct pod_ip_value {
@@ -173,8 +214,10 @@ int main(int argc, char **argv)
 			// } else {
 			// 	printf("Invalid IP address: %u\n", value_ip.ip_address);
 			// }
-			bpf_map_lookup_elem(hash_map, &value_ip.ip_address, &value);
 			// select the ip address if hash map not found
+			value = 0;
+			if (hash_map >= 0)
+				bpf_map_lookup_elem(hash_map, &value_ip.ip_address, &value);
 			if(value == 0) {
 				selected_ip = value_ip.ip_address;
 				break;
@@ -196,8 +239,10 @@ int main(int argc, char **argv)
 
 	tc_opts.flags = tc_opts.prog_fd = tc_opts.prog_id = 0;
 	err = bpf_tc_detach(&tc_hook, &tc_opts);
-	close(svc_pod_ips);
-	close(hash_map);
+	if (svc_pod_ips >= 0)
+		close(svc_pod_ips);
+	if (hash_map >= 0)
+		close(hash_map);
 	if (err) {
 		fprintf(stderr, "Failed to detach TC: %d\n", err);
 		goto cleanup;
