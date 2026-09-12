@@ -51,10 +51,76 @@ to whichever backend Pod currently holds the fewest connections.**
 - **Cheap to try per Service.** Point it at one `NodePort` Service first
   (e.g. the heaviest long-connection API), leave the rest on kube-proxy.
 
-Honest limits: one Service per DaemonSet install today, `NodePort` Services
-only, needs privileged Pods + a kernel with TC-BPF and `bpf_skb_ct_*` kfuncs,
-and cross-node count sync (`go/map_sync/`) is optional/extra setup — without it
-each node balances on its locally observed counts.
+- **Cheap to try per Service.** Point it at one `NodePort` Service first
+  (e.g. the heaviest long-connection API), leave the rest on kube-proxy.
+
+## Limitations (please read before production use)
+
+- **One Service per DaemonSet install.** The tracker watches a single
+  `LB_SERVICE_NAME`/`LB_NAMESPACE`, and `svc_map` holds the active NodePort.
+  Balancing N Services needs N DaemonSet copies (different names/selectors) or
+  a multi-service extension.
+- **NodePort Services only.** No `ClusterIP`-only or `LoadBalancer` support;
+  `LB_NODEPORT` (1–65535) must equal the Service's `nodePort`, `LB_TARGET_PORT`
+  must equal its `targetPort`/`containerPort`.
+- **IPv4 TCP/UDP only.** The datapath (`tc.bpf.c`) parses `ETH_P_IP` + TCP/UDP
+  tuples; other protocols pass through untouched, IPv6 is not NATed.
+- **Kernel requirement.** Needs TC-BPF with `clsact` plus `bpf_skb_ct_*`
+  conntrack kfuncs (recent kernels, e.g. 6.x with `CONFIG_NETFILTER` conntrack).
+  Old kernels fail at load/attach time.
+- **Privileged per-node agent.** Requires `privileged: true`, `hostNetwork`,
+  `BPF`/`NET_ADMIN`/`SYS_ADMIN` caps, and host mounts (`/lib/modules`,
+  `/sys/fs/bpf`). This is the standard eBPF-DaemonSet tradeoff: full node power
+  in exchange for kernel access.
+- **Static fallback is 2 backends; scale cap ~100 Pods.** `svc_map` carries only
+  `be1/be2` as fallback (live set comes from the tracker map, capped at 100
+  entries in `ebpfMapSpec`), `hash_map` at 10240 entries. Tune `MaxEntries` for
+  larger fleets.
+- **Eventual consistency (~2s + resync).** Backend election runs every 2s and the
+  Pod watch resyncs every 15 min as backup — brief imbalance is possible right
+  after scale/rollout events.
+- **Per-node counts by default.** Without deploying `go/map_sync/` (fentry +
+  gRPC peer sync, not included in the DaemonSet), each node balances on locally
+  observed connection counts rather than a global view.
+- **No L7 features.** No TLS termination, header/path routing, retries, rate
+  limiting, or Prometheus metrics — it is a pure L3/L4 least-conn steerer.
+  Health checking = K8s readiness only (unready Pods are excluded on next sync).
+- **One iface per node + runs on control-plane too.** `LB_IFACE` is a single
+  iface (auto-detected default route); multi-NIC/dual-plane nodes need explicit
+  config. The DaemonSet tolerates all taints, so control-plane nodes also get a
+  Pod unless you add a `nodeAffinity`.
+- **Hard node death can leave `clsact`.** Graceful drain cleans up via `SIGTERM`
+  + `preStop`; a crashed node needs manual `tc qdisc del dev <iface> clsact` and
+  stale `/sys/fs/bpf/*` removal (see Uninstall).
+
+## Why eBPF, and what it buys you here
+
+eBPF lets you run small verified programs **inside the kernel** at hook points
+like TC ingress — no kernel rebuild, no module, detachable at runtime. This
+project uses exactly that:
+
+- **Datapath in kernel (`bpf/tc/tc.bpf.c`, hook `tc_ingress`).** Every packet to
+  your `nodePort` is inspected before it climbs the normal stack. New flows get
+  NAT decision + connection counting via eBPF maps (`svc_map`, `hash_map`,
+  `selected`); established flows hit existing conntrack entries and pass
+  through. No per-packet trip to userspace.
+- **Control plane in userspace.** K8s watch (`tracker`), least-conn election
+  (`tc.c` loop), and cross-node sync (`map_sync` fentry on map updates + gRPC)
+  just read/write those same maps. Kernel and userspace share state through
+  maps, not syscalls per packet.
+
+Benefits over the usual alternatives:
+
+| Approach | What changes with this eBPF design |
+|---|---|
+| iptables/IPVS kube-proxy | No giant rule chains to traverse/update on Pod churn; decision is one map lookup + conntrack insert. Updates are map writes, not rule rewrites. Programmable policy (least-conn here, anything later) instead of fixed round-robin. |
+| Userspace reverse proxy (HAProxy/Envoy/sidecar) | No extra proxy hop, no context switches or packet copies per request, lower p99 latency and CPU at high pps. LB scales with nodes instead of sizing a proxy tier. |
+| External/cloud LB | No extra network hop or provider dependency — matters on bare metal/on-prem where `type: LoadBalancer` has no implementation. |
+| Kernel module / custom build | eBPF is verified + sandboxed by the kernel, ships as a container, attaches/detaches live (`bpf_tc_attach`/`detach`), no node reboot or custom kernel. |
+
+Net effect for your Services: **per-packet work stays in the kernel fast path,
+policy stays flexible in userspace maps** — least-connection accuracy of a smart
+proxy with overhead closer to plain forwarding.
 
 ## How it works
 
