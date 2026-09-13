@@ -2,13 +2,16 @@
 # Zero-registry fallback: build once, save tarballs, copy over LAN and import
 # directly into each node's container runtime. Nothing leaves 192.168.122.0/24.
 #
-#   ./kube/distribute-images.sh "192.168.122.101 192.168.122.102"
+#   SSH_USER=fadholi ./kube/distribute-images.sh "192.168.122.101 192.168.122.102"
 #   # then: SKIP_BUILD=1 ./kube/build-and-install.sh  (images already present,
 #   # DaemonSet uses imagePullPolicy IfNotPresent so no pull is attempted)
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 NODES="${1:-${NODES:-}}"
 [ -n "$NODES" ] || { echo "usage: $0 \"<node-ip-1> <node-ip-2>...\""; exit 1; }
+# SSH login user (NOT root unless you mean it). NODES entries may also be
+# user@host to override per-node.
+SSH_USER="${SSH_USER:-${USER:-fadholi}}"
 
 REGISTRY="${REGISTRY:-local}"
 TRACKER_IMG="$REGISTRY/pod-ip-tracker:latest"
@@ -29,10 +32,16 @@ docker save -o "$OUTDIR/tc-lb-loader.tar" "$LOADER_IMG"
 ls -lh "$OUTDIR"
 
 for N in $NODES; do
-  echo "==> Copying to $N"
-  scp "$OUTDIR"/pod-ip-tracker.tar "$OUTDIR"/tc-lb-loader.tar "$N:/tmp/"
-  echo "==> Importing on $N (tries crictl/containerd, falls back to docker)"
-  ssh "$N" "sudo bash -s" <<'REMOTE'
+  # Allow "user@host" per entry, else prepend SSH_USER (scp/ssh default to
+  # local $USER, and bare IPs otherwise fall back to root on some setups).
+  case "$N" in
+    *@*) DEST="$N" ;;
+    *) DEST="$SSH_USER@$N" ;;
+  esac
+  echo "==> Copying to $DEST"
+  scp "$OUTDIR"/pod-ip-tracker.tar "$OUTDIR"/tc-lb-loader.tar "$DEST:/tmp/"
+  echo "==> Importing on $DEST (tries crictl/containerd, falls back to docker)"
+  ssh "$DEST" "sudo bash -s" <<'REMOTE'
 set -x
 if command -v ctr >/dev/null; then
   sudo ctr -n k8s.io images import /tmp/pod-ip-tracker.tar || true
