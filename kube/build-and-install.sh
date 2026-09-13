@@ -97,7 +97,8 @@ kubectl apply -f "$ROOT/kube/service/pt_daemonset.yaml"
 
 # Point the DaemonSet at the images we actually built (Hub default, LAN
 # registry, or preloaded `local/` names) — the yaml ships Hub defaults.
-kubectl set image ds/pod-ip-tracker -c tracker "$TRACKER_IMG" -c tc-loader "$LOADER_IMG" --namespace=default || true
+kubectl set image ds/pod-ip-tracker \
+  "tracker=$TRACKER_IMG" "tc-loader=$LOADER_IMG" --namespace=default || true
 
 echo "==> Applying flexible service/port selection"
 kubectl set env ds/pod-ip-tracker -c tracker \
