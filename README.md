@@ -204,7 +204,7 @@ SKIP_BUILD=1 REGISTRY=local ./kube/build-and-install.sh        # uses preloaded 
 # New nodes joining later need distribute-images.sh re-run with their IP.
 ```
 
-### Option B: manual steps (same as script)
+### Option C: manual steps (same as script)
 
 ```bash
 # 1. Build + push (run where docker works; Dockerfile contexts matter)
