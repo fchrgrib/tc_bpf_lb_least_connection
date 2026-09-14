@@ -14,8 +14,8 @@ COPY vmlinux/ vmlinux/
 COPY vmlinux.h/ vmlinux.h/
 COPY bpf/tc/ bpf/tc/
 WORKDIR /src/bpf/tc
-# Static-ish userspace binary where possible, then strip (smaller push).
-RUN make -j"$(nproc)" && strip tc || true
+# Build outputs to ../../build/bpf/tc/, then strip the binary
+RUN make -j"$(nproc)" && strip ../../build/tc || true
 
 # Slim runtime (~40MB): debian-slim + only the libs the binary needs.
 # NOTE: tc links -lelf -lz, so libelf1/zlib1g are required at runtime.
@@ -24,7 +24,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       iproute2 ca-certificates libelf1 zlib1g \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
-COPY --from=builder /src/bpf/tc/tc /app/tc
+COPY --from=builder /src/build/tc /app/tc
 COPY bpf/tc/entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/tc /app/entrypoint.sh
 ENTRYPOINT ["/app/entrypoint.sh"]

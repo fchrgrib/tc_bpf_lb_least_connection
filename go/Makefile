@@ -1,22 +1,28 @@
 .PHONY: all build clean pods-watcher map-sync
 
+# Centralized build output
+BUILD_ROOT := $(abspath ../build)
+GO_BUILD := $(BUILD_ROOT)/go
+
 all: build
 
 build: pods-watcher map-sync
 
 pods-watcher:
 	@echo "Building pods-watcher..."
-	@go build -o ../bin/pods-watcher ./pods_watcher
-	@echo "✓ Built: ../bin/pods-watcher"
+	@mkdir -p $(GO_BUILD)
+	@go build -o $(GO_BUILD)/pods-watcher ./pods_watcher
+	@echo "✓ Built: $(GO_BUILD)/pods-watcher"
 
 map-sync:
 	@echo "Building map-sync..."
-	@go build -o ../bin/map-sync ./map_sync
-	@echo "✓ Built: ../bin/map-sync"
+	@mkdir -p $(GO_BUILD)
+	@go build -o $(GO_BUILD)/map-sync ./map_sync
+	@echo "✓ Built: $(GO_BUILD)/map-sync"
 
 clean:
-	@rm -rf ../bin/pods-watcher ../bin/map-sync
-	@echo "✓ Cleaned binaries"
+	@rm -rf $(GO_BUILD)
+	@echo "✓ Cleaned Go binaries"
 
 # Generate BPF code for map-sync
 generate:

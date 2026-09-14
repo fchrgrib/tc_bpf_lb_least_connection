@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: (LGPL-2.1 OR BSD-2-Clause)
-OUTPUT := ./.output
+# Centralized build output
+BUILD_ROOT := $(abspath ../../build)
+OUTPUT := $(BUILD_ROOT)/bpf/tc
 CLANG ?= clang
 LLVM_STRIP ?= llvm-strip
 LIBBPF_SRC := $(abspath ../../libbpf/src)
@@ -71,7 +73,7 @@ all: $(APPS)
 .PHONY: clean
 clean:
 	$(call msg,CLEAN)
-	$(Q)rm -rf $(OUTPUT) $(APPS)
+	$(Q)rm -rf $(OUTPUT) $(BUILD_ROOT)/$(APPS)
 
 $(OUTPUT) $(OUTPUT)/libbpf $(BPFTOOL_OUTPUT):
 	$(call msg,MKDIR,$@)
@@ -127,7 +129,7 @@ $(BZS_APPS): $(LIBBLAZESYM_OBJ)
 # Build application binary
 $(APPS): %: $(OUTPUT)/%.o $(LIBBPF_OBJ) | $(OUTPUT)
 	$(call msg,BINARY,$@)
-	$(Q)$(CC) $(CFLAGS) $^ $(ALL_LDFLAGS) -lelf -lz -o $@
+	$(Q)$(CC) $(CFLAGS) $^ $(ALL_LDFLAGS) -lelf -lz -o $(BUILD_ROOT)/$@
 
 # delete failed targets
 .DELETE_ON_ERROR:

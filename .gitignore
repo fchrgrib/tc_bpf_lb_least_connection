@@ -1,0 +1,29 @@
+# Build outputs
+build/
+bin/
+
+# BPF build artifacts
+**/.output/
+**/*.o
+**/*.skel.h
+
+# Go build cache
+go/map_sync/fentry_*_bpfel.*
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.bak
