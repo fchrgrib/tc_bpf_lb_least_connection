@@ -52,10 +52,10 @@ build_tracker() {
   echo "==> building pod-ip-tracker ($TRACKER_IMG)"
   if [ "${SKIP_PUSH:-0}" = "1" ]; then
     docker build "${COMMON_ARGS[@]}" --cache-to type=inline \
-      -f "$ROOT/go/pods_watcher/Dockerfile" -t "$TRACKER_IMG" "$ROOT/go/pods_watcher"
+      -f "$ROOT/go/pods_watcher/Dockerfile" -t "$TRACKER_IMG" "$ROOT/go"
   else
     docker buildx build "${COMMON_ARGS[@]}" --cache-to type=inline --push \
-      -f "$ROOT/go/pods_watcher/Dockerfile" -t "$TRACKER_IMG" "$ROOT/go/pods_watcher"
+      -f "$ROOT/go/pods_watcher/Dockerfile" -t "$TRACKER_IMG" "$ROOT/go"
   fi
 }
 

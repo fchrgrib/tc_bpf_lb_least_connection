@@ -1,9 +1,11 @@
-module pod-ip-tracker
+module github.com/fahrian-afdholi/tc_bpf_lb_least_connection/go
 
 go 1.24.3
 
 require (
 	github.com/cilium/ebpf v0.18.0
+	google.golang.org/grpc v1.64.0
+	google.golang.org/protobuf v1.36.5
 	k8s.io/api v0.33.0
 	k8s.io/apimachinery v0.33.0
 	k8s.io/client-go v0.33.0
@@ -36,7 +38,7 @@ require (
 	golang.org/x/term v0.30.0 // indirect
 	golang.org/x/text v0.23.0 // indirect
 	golang.org/x/time v0.9.0 // indirect
-	google.golang.org/protobuf v1.36.5 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20240318140521-94a12d6c2237 // indirect
 	gopkg.in/evanphx/json-patch.v4 v4.12.0 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect

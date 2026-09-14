@@ -18,6 +18,13 @@ type fentryConfig struct {
 	HostPid  uint64
 }
 
+type fentryMapUpdater uint32
+
+const (
+	fentryMapUpdaterMAP_UPDATE fentryMapUpdater = 0
+	fentryMapUpdaterMAP_DELETE fentryMapUpdater = 1
+)
+
 // loadFentry returns the embedded CollectionSpec for fentry.
 func loadFentry() (*ebpf.CollectionSpec, error) {
 	reader := bytes.NewReader(_FentryBytes)
@@ -53,9 +60,10 @@ func loadFentryObjects(obj interface{}, opts *ebpf.CollectionOptions) error {
 type fentrySpecs struct {
 	fentryProgramSpecs
 	fentryMapSpecs
+	fentryVariableSpecs
 }
 
-// fentrySpecs contains programs before they are loaded into the kernel.
+// fentryProgramSpecs contains programs before they are loaded into the kernel.
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type fentryProgramSpecs struct {
@@ -72,12 +80,20 @@ type fentryMapSpecs struct {
 	MapEvents *ebpf.MapSpec `ebpf:"map_events"`
 }
 
+// fentryVariableSpecs contains global variables before they are loaded into the kernel.
+//
+// It can be passed ebpf.CollectionSpec.Assign.
+type fentryVariableSpecs struct {
+	MapUpdater *ebpf.VariableSpec `ebpf:"map_updater"`
+}
+
 // fentryObjects contains all objects after they have been loaded into the kernel.
 //
 // It can be passed to loadFentryObjects or ebpf.CollectionSpec.LoadAndAssign.
 type fentryObjects struct {
 	fentryPrograms
 	fentryMaps
+	fentryVariables
 }
 
 func (o *fentryObjects) Close() error {
@@ -102,6 +118,13 @@ func (m *fentryMaps) Close() error {
 		m.MapConfig,
 		m.MapEvents,
 	)
+}
+
+// fentryVariables contains all global variables after they have been loaded into the kernel.
+//
+// It can be passed to loadFentryObjects or ebpf.CollectionSpec.LoadAndAssign.
+type fentryVariables struct {
+	MapUpdater *ebpf.Variable `ebpf:"map_updater"`
 }
 
 // fentryPrograms contains all programs after they have been loaded into the kernel.

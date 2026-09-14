@@ -2,10 +2,12 @@
 # Static build (no CGO needed: cilium/ebpf + client-go are pure Go), stripped.
 FROM golang:1.24.3 AS builder
 WORKDIR /app
+# Copy entire go/ folder for unified module
 COPY go.mod go.sum ./
 RUN go mod download
-COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o pod-ip-tracker .
+COPY pods_watcher/ ./pods_watcher/
+# Build from subdirectory
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o pod-ip-tracker ./pods_watcher
 
 FROM alpine:3.20
 RUN apk add --no-cache ca-certificates
