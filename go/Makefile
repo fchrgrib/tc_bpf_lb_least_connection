@@ -1,4 +1,4 @@
-.PHONY: all build clean pods-watcher map-sync
+.PHONY: all build clean pods-watcher map-sync tc-loader
 
 # Centralized build output
 BUILD_ROOT := $(abspath ../build)
@@ -6,7 +6,7 @@ GO_BUILD := $(BUILD_ROOT)/go
 
 all: build
 
-build: pods-watcher map-sync
+build: pods-watcher map-sync tc-loader
 
 pods-watcher:
 	@echo "Building pods-watcher..."
@@ -17,17 +17,28 @@ pods-watcher:
 map-sync:
 	@echo "Building map-sync..."
 	@mkdir -p $(GO_BUILD)
+	@cd map_sync && go generate
 	@go build -o $(GO_BUILD)/map-sync ./map_sync
 	@echo "✓ Built: $(GO_BUILD)/map-sync"
 
+tc-loader:
+	@echo "Building tc-loader..."
+	@mkdir -p $(GO_BUILD)
+	@cd tc && go generate
+	@go build -o $(GO_BUILD)/tc-loader ./tc
+	@echo "✓ Built: $(GO_BUILD)/tc-loader"
+
 clean:
 	@rm -rf $(GO_BUILD)
-	@echo "✓ Cleaned Go binaries"
+	@rm -f tc/tc_x86_bpfel.go tc/tc_x86_bpfel.o
+	@rm -f map_sync/fentry_x86_bpfel.go map_sync/fentry_x86_bpfel.o
+	@echo "✓ Cleaned Go binaries and generated BPF files"
 
-# Generate BPF code for map-sync
+# Generate BPF code for all packages
 generate:
 	@echo "Generating BPF code..."
 	@cd map_sync && go generate
+	@cd tc && go generate
 	@echo "✓ Generated BPF code"
 
 # Run go mod tidy
@@ -41,4 +52,5 @@ verify:
 	@echo "Verifying builds..."
 	@go build ./pods_watcher
 	@go build ./map_sync
+	@cd tc && go generate && cd .. && go build ./tc
 	@echo "✓ All packages build successfully"

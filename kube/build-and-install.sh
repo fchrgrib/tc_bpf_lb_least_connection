@@ -63,10 +63,10 @@ build_loader() {
   echo "==> building tc-loader ($LOADER_IMG)"
   if [ "${SKIP_PUSH:-0}" = "1" ]; then
     docker build "${COMMON_ARGS[@]}" --cache-to type=inline \
-      -f "$ROOT/bpf/tc/Dockerfile" -t "$LOADER_IMG" "$ROOT"
+      -f "$ROOT/go/tc/Dockerfile" -t "$LOADER_IMG" "$ROOT"
   else
     docker buildx build "${COMMON_ARGS[@]}" --cache-to type=inline --push \
-      -f "$ROOT/bpf/tc/Dockerfile" -t "$LOADER_IMG" "$ROOT"
+      -f "$ROOT/go/tc/Dockerfile" -t "$LOADER_IMG" "$ROOT"
   fi
 }
 

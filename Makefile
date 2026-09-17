@@ -1,4 +1,4 @@
-.PHONY: all build clean bpf go help
+.PHONY: all build clean go help
 
 # Unified build system for TC eBPF Load Balancer
 # All build artifacts go to ./build/
@@ -7,8 +7,7 @@ help:
 	@echo "TC eBPF Load Balancer - Build System"
 	@echo ""
 	@echo "Usage:"
-	@echo "  make build      - Build everything (BPF + Go)"
-	@echo "  make bpf        - Build BPF programs only"
+	@echo "  make build      - Build all Go components (includes BPF compilation)"
 	@echo "  make go         - Build Go userspace only"
 	@echo "  make clean      - Clean all build artifacts"
 	@echo "  make help       - Show this help"
@@ -17,14 +16,9 @@ help:
 
 all: build
 
-build: bpf go
+build: go
 	@echo ""
 	@echo "✓ Build complete. Artifacts in ./build/"
-
-bpf:
-	@echo "==> Building BPF programs..."
-	@$(MAKE) -C bpf/tc
-	@echo "✓ BPF build complete"
 
 go:
 	@echo "==> Building Go userspace..."
@@ -33,7 +27,6 @@ go:
 
 clean:
 	@echo "==> Cleaning build artifacts..."
-	@$(MAKE) -C bpf/tc clean
 	@$(MAKE) -C go clean
 	@rm -rf build/
 	@echo "✓ Clean complete"

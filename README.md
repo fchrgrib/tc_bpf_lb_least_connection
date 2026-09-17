@@ -21,7 +21,7 @@ This project replaces that decision point **per node, inside the kernel**:
    physical iface. For a new TCP/UDP flow to your `nodePort`, it DNATs the
    packet to the currently least-loaded backend (plus SNAT/masquerade) using
    kernel conntrack (`bpf_skb_ct_*`), so return traffic works with no userspace hop.
-3. The loader (`bpf/tc/tc.c`) re-evaluates every 2s: it reads live backend IPs
+3. The loader (`go/tc/tc.go`) re-evaluates every 2s: it reads live backend IPs
    plus per-backend connection counts (`hash_map`, optionally synced across
    nodes by `go/map_sync/` via fentry + gRPC) and writes the winner into the
    `selected` map the datapath reads.
@@ -130,14 +130,14 @@ Two containers run together on **every node** via one DaemonSet
 | Container | Image | Job |
 |---|---|---|
 | `tracker` | `fchrgrib/pod-ip-tracker:latest` (built from `go/pods_watcher/`) | Watches `test-service` Pods via the K8s API, maintains pinned map `/sys/fs/bpf/service_pod_ips` |
-| `tc-loader` | `fchrgrib/tc-lb-loader:latest` (built from `bpf/tc/`) | Attaches the TC eBPF program (`tc.bpf.c`) to the host iface, picks the least-connection backend every 2s |
+| `tc-loader` | `fchrgrib/tc-lb-loader:latest` (built from `go/tc/`) | Attaches the TC eBPF program (`tc.bpf.c`) to the host iface, picks the least-connection backend every 2s |
 
 Supporting pieces:
 
 - `kube/service/pt_rbac.yaml` — ServiceAccount + ClusterRole (`get,list,watch` on `pods,services`) + Binding.
 - `kube/service/lb_service.yaml` — demo `NodePort` Service (`nodePort: 30080`, `targetPort: 8000`).
 - `kube/service/backend.yaml` — demo backend Deployment (3x `flask-backend` on port 8000).
-- `bpf/tc/entrypoint.sh` — auto-detects the host iface per node (see Configuration).
+- `go/tc/entrypoint.sh` — auto-detects the host iface per node (see Configuration).
 - `kube/build-and-install.sh` — one-shot build + install script.
 
 Auto-scale behavior is native Kubernetes: the DaemonSet controller creates one Pod
@@ -209,7 +209,7 @@ SKIP_BUILD=1 REGISTRY=local ./kube/build-and-install.sh        # uses preloaded 
 ```bash
 # 1. Build + push (run where docker works; Dockerfile contexts matter)
 docker build -f go/pods_watcher/Dockerfile -t fchrgrib/pod-ip-tracker:latest go/pods_watcher
-docker build -f bpf/tc/Dockerfile -t fchrgrib/tc-lb-loader:latest .
+docker build -f go/tc/Dockerfile -t fchrgrib/tc-lb-loader:latest .
 docker push fchrgrib/pod-ip-tracker:latest
 docker push fchrgrib/tc-lb-loader:latest
 
@@ -333,8 +333,9 @@ rm -f /sys/fs/bpf/service_pod_ips /sys/fs/bpf/selected /sys/fs/bpf/hash_map
 ## Project layout
 
 ```text
-bpf/tc/            tc.bpf.c (datapath), tc.c (loader/least-conn loop), Dockerfile, entrypoint.sh
+bpf/tc/            tc.bpf.c (datapath - kernel space)
 bpf/fentry/        fentry tracing for map sync
+go/tc/             tc.go (loader/least-conn loop - user space), Dockerfile, entrypoint.sh
 go/pods_watcher/   tracker daemon (Pod watch → pinned eBPF map), Dockerfile
 go/map_sync/       cross-node hash_map sync via gRPC (optional, not in DaemonSet)
 kube/service/      pt_rbac.yaml, pt_daemonset.yaml, lb_service.yaml, backend.yaml

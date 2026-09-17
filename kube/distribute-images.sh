@@ -24,7 +24,7 @@ export DOCKER_BUILDKIT=1
 docker build --provenance=false --sbom=false \
   -f "$ROOT/go/pods_watcher/Dockerfile" -t "$TRACKER_IMG" "$ROOT/go/pods_watcher"
 docker build --provenance=false --sbom=false \
-  -f "$ROOT/bpf/tc/Dockerfile" -t "$LOADER_IMG" "$ROOT"
+  -f "$ROOT/go/tc/Dockerfile" -t "$LOADER_IMG" "$ROOT"
 
 echo "==> Saving tarballs"
 docker save -o "$OUTDIR/pod-ip-tracker.tar" "$TRACKER_IMG"
