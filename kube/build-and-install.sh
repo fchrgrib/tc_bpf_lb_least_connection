@@ -3,6 +3,12 @@
 # Run once on control-plane. After that, new nodes get the LB automatically
 # via the DaemonSet, and removed nodes are cleaned up automatically.
 #
+# Base LB only (tracker + tc-loader):
+#   ./kube/build-and-install.sh
+#
+# Everything (base LB + active-conn + map_sync) in one command:
+#   ./kube/build-and-install.sh --all
+#
 # Flexible: pick any Service + NodePort without rebuilding:
 #   SERVICE_NAME=my-api NAMESPACE=prod NODEPORT=31001 TARGET_PORT=8080 ./kube/build-and-install.sh
 # Or switch an existing install without reinstall:
@@ -11,7 +17,7 @@
 #
 # Speed knobs:
 #   SKIP_BUILD=1   # skip docker entirely, only kubectl apply/set env (fastest)
-#   ONLY=tracker|loader  # rebuild/push just one image
+#   ONLY=tracker|loader|active-conn|map-sync  # rebuild/push just one image
 #   SKIP_PUSH=1    # build locally only (registry mirror / kind / preloaded nodes)
 #   NO_CACHE=1     # disable registry layer cache (default: cache on)
 #   PIN_DIGEST=0   # don't pin images by @sha256 (default: pin after push)
@@ -28,12 +34,22 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # Namespace is applied consistently to RBAC, DaemonSet, and set env/image.
 NS="${NAMESPACE:-default}"
 
+# --all flag: install everything (base LB + active-conn + map_sync)
+ALL="${ALL:-0}"
+for arg in "$@"; do
+  case "$arg" in
+    --all) ALL=1 ;;
+  esac
+done
+
 if [ -n "${LOCAL_REGISTRY:-}" ]; then
-  REGISTRY="$LOCAL_REGISTRY"  # LAN registry wins over Docker Hub default
+  REGISTRY="$LOCAL_REGISTRY"
 fi
 REGISTRY="${REGISTRY:-fchrgrib}"
 TRACKER_IMG="${TRACKER_IMG:-$REGISTRY/pod-ip-tracker:latest}"
 LOADER_IMG="${LOADER_IMG:-$REGISTRY/tc-lb-loader:latest}"
+ACTIVE_CONN_IMG="${ACTIVE_CONN_IMG:-$REGISTRY/active-conn:latest}"
+MAP_SYNC_IMG="${MAP_SYNC_IMG:-$REGISTRY/map-sync:latest}"
 
 SERVICE_NAME="${SERVICE_NAME:-test-service}"
 NODEPORT="${NODEPORT:-30080}"
@@ -46,7 +62,7 @@ export DOCKER_BUILDKIT=1
 # Registry layer cache: rebuilds push only changed layers (much faster 2nd run).
 CACHE_ARGS=()
 if [ "${NO_CACHE:-0}" != "1" ]; then
-  CACHE_ARGS=(--cache-from "type=registry,ref=$TRACKER_IMG" --cache-from "type=registry,ref=$LOADER_IMG")
+  CACHE_ARGS=(--cache-from "type=registry,ref=$TRACKER_IMG" --cache-from "type=registry,ref=$LOADER_IMG" --cache-from "type=registry,ref=$ACTIVE_CONN_IMG")
 fi
 COMMON_ARGS=(--provenance=false --sbom=false "${CACHE_ARGS[@]}")
 
@@ -72,8 +88,28 @@ build_loader() {
   fi
 }
 
-# Resolve repo@sha256:<digest> so the DaemonSet runs an immutable image.
-# Falls back to the tag when the registry can't be inspected (e.g. insecure LAN).
+build_active_conn() {
+  echo "==> building active-conn ($ACTIVE_CONN_IMG)"
+  if [ "${SKIP_PUSH:-0}" = "1" ]; then
+    docker build "${COMMON_ARGS[@]}" --cache-to type=inline \
+      -f "$ROOT/go/trace/Dockerfile" -t "$ACTIVE_CONN_IMG" "$ROOT"
+  else
+    docker buildx build "${COMMON_ARGS[@]}" --cache-to type=inline --push \
+      -f "$ROOT/go/trace/Dockerfile" -t "$ACTIVE_CONN_IMG" "$ROOT"
+  fi
+}
+
+build_map_sync() {
+  echo "==> building map-sync ($MAP_SYNC_IMG)"
+  if [ "${SKIP_PUSH:-0}" = "1" ]; then
+    docker build "${COMMON_ARGS[@]}" --cache-to type=inline \
+      -f "$ROOT/go/map_sync/Dockerfile" -t "$MAP_SYNC_IMG" "$ROOT"
+  else
+    docker buildx build "${COMMON_ARGS[@]}" --cache-to type=inline --push \
+      -f "$ROOT/go/map_sync/Dockerfile" -t "$MAP_SYNC_IMG" "$ROOT"
+  fi
+}
+
 resolve_ref() {
   local ref="$1"
   [ "${PIN_DIGEST:-1}" = "1" ] || { echo "$ref"; return; }
@@ -84,31 +120,36 @@ resolve_ref() {
   if [ -n "$digest" ]; then echo "${repo}@${digest}"; else echo "$ref"; fi
 }
 
+# ── Build ────────────────────────────────────────────────────────────────────
 if [ "${SKIP_BUILD:-0}" != "1" ]; then
   case "$ONLY" in
-    tracker) build_tracker ;;
-    loader)  build_loader ;;
+    tracker)     build_tracker ;;
+    loader)      build_loader ;;
+    active-conn) build_active_conn ;;
+    map-sync)    build_map_sync ;;
     *)
       build_tracker & P1=$!
       build_loader  & P2=$!
+      [ "$ALL" = "1" ] && { build_active_conn & P3=$!; build_map_sync & P4=$!; }
       wait $P1; S1=$?
       wait $P2; S2=$?
-      [ $S1 -eq 0 ] && [ $S2 -eq 0 ] || { echo "build failed ($S1/$S2)"; exit 1; }
+      [ "$ALL" = "1" ] && { wait $P3; S3=$?; wait $P4; S4=$?; } || { S3=0; S4=0; }
+      [ $S1 -eq 0 ] && [ $S2 -eq 0 ] && [ $S3 -eq 0 ] && [ $S4 -eq 0 ] \
+        || { echo "build failed ($S1/$S2/$S3/$S4)"; exit 1; }
       ;;
   esac
 else
   echo "==> SKIP_BUILD=1: skipping docker build/push"
 fi
 
-echo "==> Installing namespace-scoped RBAC + DaemonSet (namespace=$NS)"
-# Remove the old cluster-wide grants from previous installs (best effort).
+# ── Install base LB (tracker + tc-loader) ───────────────────────────────────
+echo "==> Installing base LB: namespace-scoped RBAC + DaemonSet (namespace=$NS)"
 kubectl delete clusterrole/pod-ip-tracker clusterrolebinding/pod-ip-tracker \
   --ignore-not-found >/dev/null 2>&1 || true
-# RBAC is now a Role/RoleBinding in the target namespace (not cluster-wide).
 sed "s|__NAMESPACE__|$NS|g" "$ROOT/kube/service/pt_rbac.yaml" | kubectl apply -n "$NS" -f -
 kubectl apply -n "$NS" -f "$ROOT/kube/service/pt_daemonset.yaml"
 
-echo "==> Pinning images (digest where possible)"
+echo "==> Pinning base LB images (digest where possible)"
 TRACKER_REF="$(resolve_ref "$TRACKER_IMG")"
 LOADER_REF="$(resolve_ref "$LOADER_IMG")"
 kubectl -n "$NS" set image ds/pod-ip-tracker \
@@ -120,9 +161,55 @@ kubectl -n "$NS" set env ds/pod-ip-tracker -c tracker \
 kubectl -n "$NS" set env ds/pod-ip-tracker -c tc-loader \
   "LB_NODEPORT=$NODEPORT" "LB_TARGET_PORT=$TARGET_PORT" "LB_IFACE=$LB_IFACE" || true
 
-echo "==> Waiting for rollout"
+echo "==> Waiting for base LB rollout"
 kubectl -n "$NS" rollout status daemonset/pod-ip-tracker --timeout=180s
 
+# ── Install active-conn (--all only) ─────────────────────────────────────────
+if [ "$ALL" = "1" ]; then
+  echo "==> Installing active-conn DaemonSet"
+  kubectl -n "$NS" apply -f "$ROOT/kube/active_conn/rbac.yaml"
+  ACTIVE_CONN_REF="$(resolve_ref "$ACTIVE_CONN_IMG")"
+  sed "s|__IMAGE__|$ACTIVE_CONN_REF|g" "$ROOT/kube/active_conn/daemonset.yaml" \
+    | kubectl -n "$NS" apply -f -
+
+  echo "==> Waiting for active-conn rollout"
+  kubectl -n "$NS" rollout status ds/active-conn --timeout=180s
+fi
+
+# ── Install map_sync (--all only) ───────────────────────────────────────────
+if [ "$ALL" = "1" ]; then
+  echo "==> Installing map_sync with mTLS"
+  # cert-manager check
+  if ! kubectl get ns cert-manager >/dev/null 2>&1; then
+    echo "ERROR: cert-manager not found. Install it first:"
+    echo "  kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.15.3/cert-manager.yaml"
+    echo "  kubectl -n cert-manager wait --for=condition=Available deploy --all --timeout=180s"
+    exit 1
+  fi
+
+  echo "==> Applying map_sync cert-manager issuer + CA"
+  kubectl apply -f "$ROOT/kube/map_sync/cert-manager.yaml"
+  kubectl -n cert-manager wait --for=condition=Ready certificate/map-sync-ca --timeout=180s
+
+  echo "==> Applying map_sync RBAC, Service, Certificate, NetworkPolicy"
+  kubectl -n "$NS" apply -f "$ROOT/kube/map_sync/rbac.yaml"
+  kubectl -n "$NS" apply -f "$ROOT/kube/map_sync/service.yaml"
+  kubectl -n "$NS" apply -f "$ROOT/kube/map_sync/certificate.yaml"
+  kubectl -n "$NS" apply -f "$ROOT/kube/map_sync/networkpolicy.yaml"
+  kubectl -n "$NS" wait --for=condition=Ready certificate/map-sync-tls --timeout=180s
+
+  echo "==> Applying map_sync DaemonSet"
+  MAP_SYNC_REF="$(resolve_ref "$MAP_SYNC_IMG")"
+  sed "s|__IMAGE__|$MAP_SYNC_REF|g" "$ROOT/kube/map_sync/daemonset.yaml" \
+    | kubectl -n "$NS" apply -f -
+
+  echo "==> Waiting for map_sync rollout"
+  kubectl -n "$NS" rollout status ds/map-sync --timeout=180s
+fi
+
+echo
 echo "OK: LB now tracks service $NS/$SERVICE_NAME on nodeport $NODEPORT -> $TARGET_PORT."
+[ "$ALL" = "1" ] && echo "Components: tracker + tc-loader + active-conn + map-sync"
+[ "$ALL" != "1" ] && echo "Components: tracker + tc-loader (use --all for active-conn + map-sync)"
 echo "New nodes get a pod automatically; deleting a node removes its pod."
-echo "Check with: kubectl get pods -o wide -l app=pod-ip-tracker -n $NS"
+echo "Check with: kubectl get pods -o wide -n $NS"

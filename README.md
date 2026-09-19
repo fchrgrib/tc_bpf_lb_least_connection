@@ -183,16 +183,20 @@ On the control-plane where you install from:
 ### Option A: one-shot script (recommended)
 
 ```bash
+# Base LB only (tracker + tc-loader):
 ./kube/build-and-install.sh
+
+# Everything in one command (base LB + active-conn + map_sync):
+./kube/build-and-install.sh --all
 ```
 
-This builds both images, pushes them, applies RBAC + DaemonSet, and waits for rollout.
+This builds all images, pushes them, applies RBAC + DaemonSets, and waits for rollout.
 Custom registry:
 
 ```bash
-REGISTRY=myregistry.example.com/team ./kube/build-and-install.sh
+REGISTRY=myregistry.example.com/team ./kube/build-and-install.sh --all
 # Build locally without pushing (images must already be visible to nodes):
-SKIP_PUSH=1 ./kube/build-and-install.sh
+SKIP_PUSH=1 ./kube/build-and-install.sh --all
 ```
 
 Expected image variables (defaults shown):
@@ -201,6 +205,8 @@ Expected image variables (defaults shown):
 REGISTRY=fchrgrib
 TRACKER_IMG=$REGISTRY/pod-ip-tracker:latest
 LOADER_IMG=$REGISTRY/tc-lb-loader:latest
+ACTIVE_CONN_IMG=$REGISTRY/active-conn:latest
+MAP_SYNC_IMG=$REGISTRY/map-sync:latest
 ```
 
 ### Option B: local LAN, no Docker Hub (`192.168.122.0/24`)
@@ -214,14 +220,14 @@ sudo ./kube/setup-local-registry.sh
 # 2. On EACH node, run the printed snippet (docker daemon.json OR containerd
 #    hosts.toml for insecure registry), restart docker/containerd.
 # 3. Build + push over LAN, DaemonSet is repointed automatically:
-LOCAL_REGISTRY=192.168.122.100:5000 ./kube/build-and-install.sh
+LOCAL_REGISTRY=192.168.122.100:5000 ./kube/build-and-install.sh --all
 ```
 
 Zero-registry fallback (no daemon changes, but manual per new node):
 
 ```bash
 ./kube/distribute-images.sh "192.168.122.101 192.168.122.102"  # scp + ctr import
-SKIP_BUILD=1 REGISTRY=local ./kube/build-and-install.sh        # uses preloaded images
+SKIP_BUILD=1 REGISTRY=local ./kube/build-and-install.sh --all  # uses preloaded images
 # New nodes joining later need distribute-images.sh re-run with their IP.
 ```
 
@@ -231,33 +237,56 @@ SKIP_BUILD=1 REGISTRY=local ./kube/build-and-install.sh        # uses preloaded 
 # 1. Build + push (run where docker works; Dockerfile contexts matter)
 docker build -f go/pods_watcher/Dockerfile -t fchrgrib/pod-ip-tracker:latest go/pods_watcher
 docker build -f go/tc/Dockerfile -t fchrgrib/tc-lb-loader:latest .
-docker push fchrgrib/pod-ip-tracker:latest
-docker push fchrgrib/tc-lb-loader:latest
+docker build -f go/trace/Dockerfile -t fchrgrib/active-conn:latest .
+docker build -f go/map_sync/Dockerfile -t fchrgrib/map-sync:latest .
 
 # 2. Install from control-plane (only this step needs the cluster)
 kubectl apply -f kube/service/pt_rbac.yaml
 kubectl apply -f kube/service/pt_daemonset.yaml
 kubectl rollout status daemonset/pod-ip-tracker --timeout=180s
 
-# 3. Demo backend + service (optional)
+# 3. Active-conn (tracepoint)
+kubectl apply -f kube/active_conn/rbac.yaml
+sed 's|__IMAGE__|fchrgrib/active-conn:latest|g' kube/active_conn/daemonset.yaml | kubectl apply -f -
+kubectl rollout status ds/active-conn --timeout=180s
+
+# 4. Map-sync (requires cert-manager)
+kubectl apply -f kube/map_sync/cert-manager.yaml
+kubectl -n cert-manager wait --for=condition=Ready certificate/map-sync-ca --timeout=180s
+kubectl apply -f kube/map_sync/rbac.yaml kube/map_sync/service.yaml kube/map_sync/certificate.yaml kube/map_sync/networkpolicy.yaml
+kubectl -n default wait --for=condition=Ready certificate/map-sync-tls --timeout=180s
+sed 's|__IMAGE__|fchrgrib/map-sync:latest|g' kube/map_sync/daemonset.yaml | kubectl apply -f -
+kubectl rollout status ds/map-sync --timeout=180s
+
+# 5. Demo backend + service (optional)
 kubectl apply -f kube/service/backend.yaml
 kubectl apply -f kube/service/lb_service.yaml
 ```
 
-### Adding / removing nodes
-
-No LB-specific step. Just join / remove the node the normal way (`kubeadm join`,
-cluster autoscaler, cloud provider, etc.):
-
-- New `Ready` node → DaemonSet creates a `pod-ip-tracker-*` Pod on it within seconds.
-- Deleted/drained node → Pod is deleted; `SIGTERM` + `preStop` detaches TC and deletes `clsact`.
-
-Verify:
+### Installing the full least-connection chain (tracker + tc-loader + map_sync + active-conn)
 
 ```bash
-kubectl get pods -o wide -l app=pod-ip-tracker
-kubectl get ds pod-ip-tracker
+# One command installs everything:
+./kube/build-and-install.sh --all
+
+# Or install components individually:
+./kube/build-and-install.sh                    # 1. Main LB (tracker + tc-loader)
+./kube/active_conn/install.sh                  # 2. Active connection counter
+./kube/map_sync/install.sh                     # 3. Cross-node map sync
 ```
+
+After installation, the full chain is:
+```
+active-conn  +1 ESTABLISHED / -1 CLOSE  pod_connection_counts[podIP]
+    ↓ fentry hook
+map-sync     → ringbuf → gRPC peers → hash_map[podIP] (cross-node)
+    ↓
+tc-loader    reads hash_map[podIP], picks minimum → selected
+    ↓
+tc datapath  DNATs each new flow to `selected`
+```
+
+### Adding / removing nodes
 
 ## Configuration
 
@@ -273,6 +302,17 @@ dynamic-only from the tracker map).
 | `tc-loader` | `LB_TARGET_PORT` | `8000` | Must equal backend `containerPort` / Service `targetPort`. Used in DNAT. |
 | `tc-loader` | `LB_IFACE` | `""` (auto) | Host iface. Empty = `ip route get 1.1.1.1` → `dev`, fallback first non-`lo`. Set explicitly (e.g. `ens3`) on multi-NIC nodes. |
 | `tc-loader` | `LB_BE1` / `LB_BE2` | `auto` | Optional static fallbacks for `svc_map`. Live IPs come from the tracker map. |
+| `active-conn` | `-tls-cert` / `-tls-key` | `""` | TLS keypair for mTLS (empty = plaintext, warns). |
+| `active-conn` | `-tls-ca` | `""` | CA bundle; enables mutual TLS. |
+| `active-conn` | `-tls-server-name` | `""` | Expected cert SAN when dialing peers. |
+| `active-conn` | `-peer-dns` | `""` | Headless service DNS for peer discovery (preferred). |
+| `active-conn` | `-ip` | `""` | Legacy single peer to sync to. |
+| `active-conn` | `-pod-ip` | `$POD_IP` | This pod's own IP (excluded from peers). |
+| `active-conn` | `-port` | `50051` | gRPC listen port. |
+| `active-conn` | `-tls-cert` | `""` | TLS cert path. |
+| `active-conn` | `-tls-key` | `""` | TLS key path. |
+| `active-conn` | `-tls-ca` | `""` | CA bundle path. |
+| `active-conn` | `-tls-server-name` | `""` | Expected cert SAN when dialing peers. |
 
 ### Use your own Service / NodePort
 
@@ -360,7 +400,7 @@ Hardening is applied to both parts of the stack.
 
 The DaemonSet no longer uses `privileged` or `hostPID`. Each container gets only
 the capabilities it needs, with `allowPrivilegeEscalation: false`,
-`readOnlyRootFilesystem: true`, `seccompProfile: RuntimeDefault`, and CPU/memory
+`readOnlyRootFilesystem: true`, `seccompProfile: Unconfined`, and CPU/memory
 limits:
 
 | Container | Capabilities | Why |
@@ -406,10 +446,14 @@ ordinary, locked-down workload.
 ```text
 bpf/tc/            tc.bpf.c (datapath - kernel space)
 bpf/fentry/        fentry tracing for map sync
+bpf/trace/         tracepoint.bpf.c (datapath - kernel space)
 go/tc/             tc.go (loader/least-conn loop - user space), Dockerfile, entrypoint.sh
+go/trace/          tracepoint.go (active-connection loader), Dockerfile
 go/pods_watcher/   tracker daemon (Pod watch → pinned eBPF map), Dockerfile
-go/map_sync/       cross-node hash_map sync via gRPC (optional), Dockerfile
+go/map_sync/       cross-node hash_map sync via gRPC, Dockerfile
 kube/service/      pt_rbac.yaml, pt_daemonset.yaml, lb_service.yaml, backend.yaml
 kube/map_sync/     hardened map_sync: cert-manager mTLS, NetworkPolicy, DaemonSet, install.sh
-kube/build-and-install.sh  one-shot build + control-plane install
+kube/active_conn/  active-conn: tracepoint DaemonSet, RBAC, install.sh
+kube/build-and-install.sh  one-shot build + install (--all for full chain)
+kube/verify.sh     preflight + health check (read-only)
 ```

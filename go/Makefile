@@ -59,8 +59,8 @@ tidy:
 # Verify all packages build
 verify:
 	@echo "Verifying builds..."
-	@go build ./pods_watcher
-	@go build ./map_sync
-	@cd tc && go generate && cd .. && go build ./tc
-	@cd trace && go generate && cd .. && go build ./trace
+	@go build -o /tmp/pods_watcher_test ./pods_watcher
+	@go build -o /tmp/map_sync_test ./map_sync
+	@cd tc && go generate && cd .. && go build -o /tmp/tc-loader_test ./tc
+	@cd trace && go generate && cd .. && go build -o /tmp/active-conn_test ./trace
 	@echo "✓ All packages build successfully"
