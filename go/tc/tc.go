@@ -28,8 +28,10 @@ func main() {
 
 	ifaceName := os.Args[1]
 	nodeport := parseUint16(os.Args[2])
-	be1IP := parseIP(os.Args[3])
-	be2IP := parseIP(os.Args[4])
+	// Backends are optional static fallbacks; "auto"/empty/0.0.0.0 rely purely
+	// on the tracker-populated service_pod_ips map.
+	be1IP := parseOptionalIP(os.Args[3])
+	be2IP := parseOptionalIP(os.Args[4])
 	targetPort := parseUint16(os.Args[5])
 
 	// Remove resource limits
@@ -57,8 +59,12 @@ func main() {
 	if err := objs.SvcMap.Update(nodeport, backends, ebpf.UpdateAny); err != nil {
 		log.Fatalf("Updating svc_map: %v", err)
 	}
-	log.Printf("Updated svc_map for nodeport %d -> backends %s, %s", 
-		nodeport, formatIP(be1IP), formatIP(be2IP))
+	if be1IP != 0 || be2IP != 0 {
+		log.Printf("Updated svc_map for nodeport %d -> fallback backends %s, %s",
+			nodeport, formatIP(be1IP), formatIP(be2IP))
+	} else {
+		log.Printf("Updated svc_map for nodeport %d -> dynamic backends only", nodeport)
+	}
 
 	// Open TC handle
 	tcnl, err := tc.Open(&tc.Config{})
@@ -229,6 +235,16 @@ func parseIP(s string) uint32 {
 		log.Fatalf("Not an IPv4 address: %s", s)
 	}
 	return binary.BigEndian.Uint32(ip4)
+}
+
+// parseOptionalIP returns 0 (meaning "no static fallback") for auto/empty/0.0.0.0,
+// and fatals only on a genuinely malformed address.
+func parseOptionalIP(s string) uint32 {
+	switch s {
+	case "", "auto", "0.0.0.0":
+		return 0
+	}
+	return parseIP(s)
 }
 
 func formatIP(ip uint32) string {

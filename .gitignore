@@ -7,8 +7,9 @@ bin/
 **/*.o
 **/*.skel.h
 
-# Go build cache
+# Generated bpf2go bindings
 go/map_sync/fentry_*_bpfel.*
+go/tc/tc_*_bpfel.*
 
 # IDE
 .idea/

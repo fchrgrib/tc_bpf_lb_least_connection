@@ -23,4 +23,4 @@ if [ -z "$IFACE" ]; then
 fi
 
 echo "[tc-loader] iface=$IFACE nodeport=$NODEPORT be1=$BE1 be2=$BE2 targetPort=$TARGET_PORT"
-exec /app/tc "$IFACE" "$NODEPORT" "$BE1" "$BE2" "$TARGET_PORT"
+exec /app/tc-loader "$IFACE" "$NODEPORT" "$BE1" "$BE2" "$TARGET_PORT"

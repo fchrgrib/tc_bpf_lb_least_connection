@@ -1,0 +1,43 @@
+# cert-manager PKI for map_sync mTLS.
+#   1. self-signed bootstrap issuer
+#   2. a CA certificate issued by it (stored in the cert-manager namespace)
+#   3. a ClusterIssuer that signs workload certs with that CA
+#
+# Apply: kubectl apply -f kube/map_sync/cert-manager.yaml
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: map-sync-selfsigned
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: map-sync-ca
+  # ClusterIssuer `ca` reads its secret from the cert-manager namespace.
+  namespace: cert-manager
+spec:
+  isCA: true
+  commonName: map-sync-ca
+  secretName: map-sync-ca-key-pair
+  duration: 87600h    # 10y
+  renewBefore: 8760h  # 1y
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: map-sync-selfsigned
+    kind: ClusterIssuer
+    group: cert-manager.io
+  subject:
+    organizations: ["tc-bpf-lb"]
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: map-sync-ca
+spec:
+  ca:
+    secretName: map-sync-ca-key-pair

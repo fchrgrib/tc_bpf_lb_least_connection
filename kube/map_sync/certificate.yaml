@@ -1,0 +1,32 @@
+# The TLS cert/key issued to every map_sync pod.
+# cert-manager writes tls.crt / tls.key / ca.crt into Secret `map-sync-tls`.
+# All pods share one cert bound to the headless service DNS name, and clients
+# verify peers against that name (so pod IPs can change freely).
+#
+# Apply: kubectl apply -f kube/map_sync/certificate.yaml
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: map-sync-tls
+  namespace: default
+spec:
+  secretName: map-sync-tls
+  duration: 2160h     # 90d
+  renewBefore: 720h   # 30d
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+  commonName: map-sync.default.svc.cluster.local
+  dnsNames:
+  - map-sync
+  - map-sync.default
+  - map-sync.default.svc
+  - map-sync.default.svc.cluster.local
+  issuerRef:
+    name: map-sync-ca
+    kind: ClusterIssuer
+    group: cert-manager.io
+  usages:
+  - server auth
+  - client auth

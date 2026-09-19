@@ -1,15 +1,16 @@
-# Keep build context small so `docker build` doesn't upload GBs (the slow part
-# before push even starts). tc-loader needs libbpf/bpftool/vmlinux headers;
-# everything else is excluded from the context.
+# Keep the build context small. Both images build from the repo root:
+#   - tc-loader  needs libbpf/bpftool/vmlinux/bpf
+#   - map-sync   needs go/ + bpf/fentry
+# so we only drop heavy/unneeded trees and all build outputs here.
 .git/
 .gitmodules
 .idea/
 .vscode/
+build/
+bin/
 **/.output/
 **/target/
 **/*.o
 **/*.d
-go/
-kube/
 blazesym/target/
 vmlinux.h/docs/

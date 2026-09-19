@@ -2,12 +2,17 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: pod-ip-tracker
+  namespace: __NAMESPACE__
 
 ---
+# Namespace-scoped Role: the tracker only reads pods/services in ONE namespace
+# (LB_NAMESPACE). A cluster-wide ClusterRole is unnecessary and broadens the
+# blast radius of a token leak. __NAMESPACE__ is substituted by build-and-install.sh.
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
+kind: Role
 metadata:
   name: pod-ip-tracker
+  namespace: __NAMESPACE__
 rules:
 - apiGroups: [""]
   resources: ["pods", "services"]
@@ -15,14 +20,15 @@ rules:
 
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
+kind: RoleBinding
 metadata:
   name: pod-ip-tracker
+  namespace: __NAMESPACE__
 roleRef:
   apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
+  kind: Role
   name: pod-ip-tracker
 subjects:
 - kind: ServiceAccount
   name: pod-ip-tracker
-  namespace: default
+  namespace: __NAMESPACE__

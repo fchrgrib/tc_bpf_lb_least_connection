@@ -1,3 +1,8 @@
+# Least-privilege LB agents. Only the datapath needs node-level access:
+#   - tracker   : writes the pinned service_pod_ips map        (BPF, SYS_RESOURCE)
+#   - tc-loader : attaches the TC program to the host iface   (BPF, NET_ADMIN, SYS_RESOURCE)
+# Neither needs privileged, hostPID, nor SYS_ADMIN.
+# Images are digest-pinned by build-and-install.sh after push.
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -8,7 +13,6 @@ spec:
   selector:
     matchLabels:
       app: pod-ip-tracker
-  # Roll out to new nodes automatically; keep existing nodes up during update.
   updateStrategy:
     type: RollingUpdate
     rollingUpdate:
@@ -18,16 +22,16 @@ spec:
       labels:
         app: pod-ip-tracker
     spec:
-      # Run on every node including new ones and control-plane.
-      # Old version used `nodeSelector: worker=true`, so unlabeled new nodes
-      # never got the LB. Tolerate everything instead.
+      # Run on every node (tolerate all taints). Add a nodeAffinity here if you
+      # want to exclude control-plane nodes.
       tolerations:
       - operator: Exists
       priorityClassName: system-node-critical
       terminationGracePeriodSeconds: 30
       serviceAccountName: pod-ip-tracker
+      # Needed: the datapath operates on the host interface / host routes.
       hostNetwork: true
-      hostPID: true
+      # NOT needed anymore (was over-privileged): hostPID: true
       dnsPolicy: ClusterFirstWithHostNet
       initContainers:
       # Ensure bpffs is mounted before tracker / tc-loader start.
@@ -42,21 +46,32 @@ spec:
           fi
           mkdir -p /sys/fs/bpf
         securityContext:
-          privileged: true
+          privileged: false
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
+            add: ["SYS_ADMIN"]   # mount(2) requires it
+          seccompProfile:
+            type: RuntimeDefault
         volumeMounts:
         - name: bpf-fs
           mountPath: /sys/fs/bpf
       containers:
       # 1) Watches Pods/Services, maintains /sys/fs/bpf/service_pod_ips.
-      # Choose which Service to balance via LB_SERVICE_NAME / LB_NAMESPACE
-      # (no rebuild needed, just set env and restart the DaemonSet).
       - name: tracker
         image: fchrgrib/pod-ip-tracker:latest
         imagePullPolicy: IfNotPresent
         securityContext:
-          privileged: true
+          privileged: false
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
           capabilities:
-            add: ["BPF", "NET_ADMIN", "SYS_ADMIN", "SYS_RESOURCE"]
+            drop: ["ALL"]
+            # BPF: create/pin maps. SYS_RESOURCE: memlock accounting.
+            # On kernels < 5.8 (no CAP_BPF) add SYS_ADMIN here.
+            add: ["BPF", "SYS_RESOURCE"]
+          seccompProfile:
+            type: RuntimeDefault
         env:
         - name: USE_INCLUSTER_CONFIG
           value: "true"
@@ -70,30 +85,37 @@ spec:
           readOnly: true
         - name: bpf-fs
           mountPath: /sys/fs/bpf
+        - name: tmp
+          mountPath: /tmp
         resources:
           requests:
             cpu: 50m
             memory: 64Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi
       # 2) Attaches the TC eBPF program to the host iface.
-      # Runs alongside tracker on the SAME node, shares pinned maps.
       - name: tc-loader
         image: fchrgrib/tc-lb-loader:latest
         imagePullPolicy: IfNotPresent
         securityContext:
-          privileged: true
+          privileged: false
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
           capabilities:
-            add: ["BPF", "NET_ADMIN", "SYS_ADMIN", "SYS_RESOURCE"]
+            drop: ["ALL"]
+            # BPF: load program. NET_ADMIN: attach TC + conntrack. SYS_RESOURCE: memlock.
+            # On kernels < 5.8 (no CAP_BPF) add SYS_ADMIN here.
+            add: ["BPF", "NET_ADMIN", "SYS_RESOURCE"]
+          seccompProfile:
+            type: RuntimeDefault
         env:
-        # Empty LB_IFACE = auto-detect default route iface per node.
-        # LB_NODEPORT must match your Service's nodePort (any 1-65535).
-        # LB_TARGET_PORT must match backend containerPort / Service targetPort.
         - name: LB_IFACE
           value: ""
         - name: LB_NODEPORT
           value: "30080"
         - name: LB_TARGET_PORT
           value: "8000"
-        # Optional static fallbacks; "auto" = rely purely on the tracker map.
         - name: LB_BE1
           value: "auto"
         - name: LB_BE2
@@ -104,9 +126,8 @@ spec:
           readOnly: true
         - name: bpf-fs
           mountPath: /sys/fs/bpf
-        # On node drain/delete kubelet sends SIGTERM -> tc.c now handles
-        # SIGTERM and runs bpf_tc_detach. Give it time, then best-effort
-        # cleanup of the clsact qdisc left on the host iface.
+        - name: tmp
+          mountPath: /tmp
         lifecycle:
           preStop:
             exec:
@@ -124,6 +145,9 @@ spec:
           requests:
             cpu: 50m
             memory: 64Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi
       volumes:
       - name: lib-modules
         hostPath:
@@ -132,3 +156,5 @@ spec:
         hostPath:
           path: /sys/fs/bpf
           type: DirectoryOrCreate
+      - name: tmp
+        emptyDir: {}

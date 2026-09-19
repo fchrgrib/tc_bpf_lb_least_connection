@@ -1,0 +1,11 @@
+# map_sync does NOT call the Kubernetes API, so it needs no RBAC rules at all
+# (unlike the tracker, which watches pods/services). A dedicated ServiceAccount
+# with no bound roles keeps a token leak worthless.
+#
+# Apply: kubectl apply -f kube/map_sync/rbac.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: map-sync
+  namespace: default
+automountServiceAccountToken: false

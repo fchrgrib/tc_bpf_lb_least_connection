@@ -284,6 +284,19 @@ spec:
 
 ## Verify it works
 
+Automated preflight + health check (run on the control-plane; read-only):
+
+```bash
+./kube/verify.sh
+# NAMESPACE=prod SERVICE_NAME=my-api NODEPORT=31001 ./kube/verify.sh
+```
+
+It checks kernel/BTF requirements, DaemonSet readiness, events, Service/NodePort
+wiring, pinned maps, the attached TC filter, and prints logs — ending in a
+`VERDICT` with an OK/WARN/FAIL summary.
+
+Manual checks:
+
 ```bash
 # 1 Pod per node, both containers Running
 kubectl get pods -o wide -l app=pod-ip-tracker
@@ -318,6 +331,43 @@ tc qdisc del dev <iface> clsact
 rm -f /sys/fs/bpf/service_pod_ips /sys/fs/bpf/selected /sys/fs/bpf/hash_map
 ```
 
+## Security posture
+
+Hardening is applied to both parts of the stack.
+
+### Datapath (`tracker` + `tc-loader`)
+
+The DaemonSet no longer uses `privileged` or `hostPID`. Each container gets only
+the capabilities it needs, with `allowPrivilegeEscalation: false`,
+`readOnlyRootFilesystem: true`, `seccompProfile: RuntimeDefault`, and CPU/memory
+limits:
+
+| Container | Capabilities | Why |
+|---|---|---|
+| `tracker` | `BPF`, `SYS_RESOURCE` | create/pin the `service_pod_ips` map |
+| `tc-loader` | `BPF`, `NET_ADMIN`, `SYS_RESOURCE` | load program, attach TC, conntrack |
+| `mount-bpf-fs` (init) | `SYS_ADMIN` | `mount(2)` bpffs only |
+
+RBAC is a namespace-scoped `Role`/`RoleBinding` (not cluster-wide), and images
+are pinned to `repo@sha256:<digest>` by `build-and-install.sh`. On kernels
+**< 5.8** (no `CAP_BPF`) add `SYS_ADMIN` to the containers.
+
+### Control plane (`map_sync`, optional)
+
+A hardened, mTLS + NetworkPolicy deployment lives in `kube/map_sync/` — see
+[`kube/map_sync/README.md`](kube/map_sync/README.md):
+
+```bash
+./kube/map_sync/install.sh
+```
+
+It requires cert-manager, builds the `map-sync` image, stands up a CA + workload
+cert, runs on the **pod network** (no `hostNetwork`) with
+`BPF`/`PERFMON`/`SYS_RESOURCE` only, and restricts `:50051` to `map_sync` pods.
+
+Principle: **only the datapath touches the host**; the control plane stays an
+ordinary, locked-down workload.
+
 ## Troubleshooting
 
 - **New node has no LB Pod**: `kubectl describe ds pod-ip-tracker`; check node taints
@@ -337,7 +387,8 @@ bpf/tc/            tc.bpf.c (datapath - kernel space)
 bpf/fentry/        fentry tracing for map sync
 go/tc/             tc.go (loader/least-conn loop - user space), Dockerfile, entrypoint.sh
 go/pods_watcher/   tracker daemon (Pod watch → pinned eBPF map), Dockerfile
-go/map_sync/       cross-node hash_map sync via gRPC (optional, not in DaemonSet)
+go/map_sync/       cross-node hash_map sync via gRPC (optional), Dockerfile
 kube/service/      pt_rbac.yaml, pt_daemonset.yaml, lb_service.yaml, backend.yaml
+kube/map_sync/     hardened map_sync: cert-manager mTLS, NetworkPolicy, DaemonSet, install.sh
 kube/build-and-install.sh  one-shot build + control-plane install
 ```

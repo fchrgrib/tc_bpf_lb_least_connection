@@ -1,0 +1,20 @@
+# Headless Service: resolves to the pod IPs of every map_sync pod (no VIP, no
+# kube-proxy load balancing). map_sync uses this DNS name to discover peers.
+#
+# Apply: kubectl apply -f kube/map_sync/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: map-sync
+  namespace: default
+  labels:
+    app: map-sync
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app: map-sync
+  ports:
+  - name: grpc
+    port: 50051
+    targetPort: 50051

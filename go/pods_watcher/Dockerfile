@@ -1,6 +1,6 @@
 # Small + fast-push tracker image (~15MB instead of ~120MB on ubuntu).
 # Static build (no CGO needed: cilium/ebpf + client-go are pure Go), stripped.
-FROM golang:1.24.3 AS builder
+FROM golang:1.25 AS builder
 WORKDIR /app
 # Copy entire go/ folder for unified module
 COPY go.mod go.sum ./

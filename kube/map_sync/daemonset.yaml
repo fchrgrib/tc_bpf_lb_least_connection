@@ -1,0 +1,85 @@
+# map_sync DaemonSet — one pod per node, on the POD NETWORK (no hostNetwork),
+# least-privilege, reachable only by other map_sync pods (see networkpolicy.yaml).
+#
+# Apply (image is substituted by install.sh):
+#   sed "s|__IMAGE__|fchrgrib/map-sync:latest|g" kube/map_sync/daemonset.yaml | kubectl apply -f -
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: map-sync
+  namespace: default
+  labels:
+    app: map-sync
+spec:
+  selector:
+    matchLabels:
+      app: map-sync
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        app: map-sync
+    spec:
+      serviceAccountName: map-sync
+      # Control-plane sync, NOT the datapath: keep it off the host network.
+      hostNetwork: false
+      hostPID: false
+      dnsPolicy: ClusterFirst
+      terminationGracePeriodSeconds: 20
+      # Only the datapath (tc-loader/tracker) needs broad privilege.
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: map-sync
+        image: __IMAGE__
+        imagePullPolicy: IfNotPresent
+        args:
+        - -port=50051
+        - -peer-dns=map-sync.default.svc.cluster.local
+        - -tls-cert=/etc/map-sync/tls/tls.crt
+        - -tls-key=/etc/map-sync/tls/tls.key
+        - -tls-ca=/etc/map-sync/tls/ca.crt
+        - -tls-server-name=map-sync.default.svc.cluster.local
+        env:
+        - name: POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          # BPF + PERFMON: load/attach fentry. SYS_RESOURCE: remove memlock.
+          # On kernels < 5.8 that lack CAP_BPF you may need to add SYS_ADMIN.
+          capabilities:
+            drop: ["ALL"]
+            add: ["BPF", "PERFMON", "SYS_RESOURCE"]
+        volumeMounts:
+        - name: bpf-fs
+          mountPath: /sys/fs/bpf
+        - name: tls
+          mountPath: /etc/map-sync/tls
+          readOnly: true
+        - name: tmp
+          mountPath: /tmp
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi
+      volumes:
+      - name: bpf-fs
+        hostPath:
+          path: /sys/fs/bpf
+          type: DirectoryOrCreate
+      - name: tls
+        secret:
+          secretName: map-sync-tls
+          defaultMode: 0400
+      - name: tmp
+        emptyDir: {}

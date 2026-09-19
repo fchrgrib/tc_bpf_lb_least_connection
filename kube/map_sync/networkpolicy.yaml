@@ -1,0 +1,27 @@
+# Allow gRPC :50051 only between map_sync pods. Combined with mTLS this gives
+# network-level + cryptographic isolation.
+#
+# IMPORTANT: NetworkPolicy is enforced only by CNIs that support it (Calico,
+# Cilium, etc.). With flannel it is silently ignored — verify with:
+#   kubectl get pods -n kube-system -l k8s-app=calico-node   # or cilium
+#
+# Apply: kubectl apply -f kube/map_sync/networkpolicy.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: map-sync
+  namespace: default
+spec:
+  podSelector:
+    matchLabels:
+      app: map-sync
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: map-sync
+    ports:
+    - protocol: TCP
+      port: 50051
