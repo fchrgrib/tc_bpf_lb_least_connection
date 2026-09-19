@@ -124,21 +124,42 @@ proxy with overhead closer to plain forwarding.
 
 ## How it works
 
-Two containers run together on **every node** via one DaemonSet
-(`kube/service/pt_daemonset.yaml`, name `pod-ip-tracker`):
+Four components run on **every node**. Two live in one DaemonSet
+(`kube/service/pt_daemonset.yaml`, name `pod-ip-tracker`); two are separate
+DaemonSets with tighter privileges:
 
-| Container | Image | Job |
+| Component | Source | Job |
 |---|---|---|
-| `tracker` | `fchrgrib/pod-ip-tracker:latest` (built from `go/pods_watcher/`) | Watches `test-service` Pods via the K8s API, maintains pinned map `/sys/fs/bpf/service_pod_ips` |
-| `tc-loader` | `fchrgrib/tc-lb-loader:latest` (built from `go/tc/`) | Attaches the TC eBPF program (`tc.bpf.c`) to the host iface, picks the least-connection backend every 2s |
+| `tracker` | `go/pods_watcher/` | Watches the Service's Pods via the K8s API, maintains pinned map `/sys/fs/bpf/service_pod_ips` |
+| `tc-loader` | `go/tc/` | Attaches the TC eBPF program (`bpf/tc/tc.bpf.c`) to the host iface; every 2s picks the least-loaded backend into `selected` |
+| `active-conn` | `go/trace/` + `bpf/trace/tracepoint.bpf.c` | **Counts active connections per pod IP** — `+1` on `TCP_ESTABLISHED`, `-1` on `TCP_CLOSE` |
+| `map-sync` | `go/map_sync/` + `bpf/fentry/fentry.c` | fentry catches those map updates → ringbuf → gRPC → merges every node's counts into the pinned `hash_map` |
+
+The chain that makes least-connection correct:
+
+```
+active-conn  pod_connection_counts[podIP]  (+1 establish / -1 close)
+    ↓ fentry hook on htab_map_update_elem
+map-sync     → ringbuf → gRPC peers → hash_map[podIP]   (cluster-wide view)
+    ↓
+tc-loader    reads hash_map[podIP], picks the minimum → selected
+    ↓
+tc datapath  DNATs each new flow to `selected`
+```
+
+> **`active-conn` is not optional.** Without it nothing ever decrements, so
+> `hash_map` only grows and "least connection" silently degrades into "fewest
+> connections *ever seen*". Install it with `./kube/active_conn/install.sh`.
 
 Supporting pieces:
 
-- `kube/service/pt_rbac.yaml` — ServiceAccount + ClusterRole (`get,list,watch` on `pods,services`) + Binding.
+- `kube/service/pt_rbac.yaml` — ServiceAccount + namespace-scoped `Role`/`RoleBinding` (`get,list,watch` on `pods,services`).
 - `kube/service/lb_service.yaml` — demo `NodePort` Service (`nodePort: 30080`, `targetPort: 8000`).
 - `kube/service/backend.yaml` — demo backend Deployment (3x `flask-backend` on port 8000).
 - `go/tc/entrypoint.sh` — auto-detects the host iface per node (see Configuration).
-- `kube/build-and-install.sh` — one-shot build + install script.
+- `kube/build-and-install.sh` — one-shot build + install for the datapath.
+- `kube/active_conn/install.sh`, `kube/map_sync/install.sh` — the two extra components.
+- `kube/verify.sh` — read-only preflight + health check.
 
 Auto-scale behavior is native Kubernetes: the DaemonSet controller creates one Pod
 per matching node on join (`Ready`) and garbage-collects the Pod on node

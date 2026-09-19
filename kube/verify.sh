@@ -71,6 +71,26 @@ fi
 hdr "4. Pods, containers, restarts"
 kubectl -n "$NS" get pods -o wide -l app="$DS" 2>/dev/null || warn "no pods listed"
 
+hdr "4b. active-conn (tracepoint) — required for counts to DECREMENT"
+if kubectl -n "$NS" get ds active-conn >/dev/null 2>&1; then
+  AC_READY=$(kubectl -n "$NS" get ds active-conn -o jsonpath='{.status.numberReady}')
+  AC_DESIRED=$(kubectl -n "$NS" get ds active-conn -o jsonpath='{.status.desiredNumberScheduled}')
+  if [ "${AC_READY:-0}" -eq "${AC_DESIRED:-0}" ] && [ "${AC_DESIRED:-0}" -gt 0 ]; then
+    ok "active-conn running on $AC_READY/$AC_DESIRED node(s)"
+  else
+    fail "active-conn only ${AC_READY:-0}/${AC_DESIRED:-0} ready"
+  fi
+  if kubectl -n "$NS" logs -l app=active-conn --tail=5 2>/dev/null | grep -q "attached tracepoint"; then
+    ok "tracepoint sock/inet_sock_set_state attached"
+  else
+    warn "no 'attached tracepoint' log line (check: kubectl logs -l app=active-conn)"
+  fi
+else
+  fail "DaemonSet active-conn NOT installed — hash_map will only ever INCREASE,
+        so 'least connection' degrades to 'fewest connections ever seen'.
+        Install with: ./kube/active_conn/install.sh"
+fi
+
 hdr "5. Recent warning events in $NS"
 EV=$(kubectl -n "$NS" get events --field-selector type=Warning \
       --sort-by='.lastTimestamp' 2>/dev/null | tail -12)

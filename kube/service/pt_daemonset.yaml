@@ -70,8 +70,13 @@ spec:
             # BPF: create/pin maps. SYS_RESOURCE: memlock accounting.
             # On kernels < 5.8 (no CAP_BPF) add SYS_ADMIN here.
             add: ["BPF", "SYS_RESOURCE"]
+          # RuntimeDefault would BLOCK the bpf() syscall: the default
+          # Docker/containerd seccomp profile only allows bpf/perf_event_open
+          # when the process holds CAP_SYS_ADMIN. We deliberately don't grant
+          # SYS_ADMIN, so seccomp is unconfined and the capability set above is
+          # the actual security boundary.
           seccompProfile:
-            type: RuntimeDefault
+            type: Unconfined
         env:
         - name: USE_INCLUSTER_CONFIG
           value: "true"
@@ -107,8 +112,10 @@ spec:
             # BPF: load program. NET_ADMIN: attach TC + conntrack. SYS_RESOURCE: memlock.
             # On kernels < 5.8 (no CAP_BPF) add SYS_ADMIN here.
             add: ["BPF", "NET_ADMIN", "SYS_RESOURCE"]
+          # Unconfined, not RuntimeDefault: the default profile gates bpf()
+          # behind CAP_SYS_ADMIN, which we intentionally do not grant.
           seccompProfile:
-            type: RuntimeDefault
+            type: Unconfined
         env:
         - name: LB_IFACE
           value: ""

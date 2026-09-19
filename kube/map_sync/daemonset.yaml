@@ -31,8 +31,12 @@ spec:
       terminationGracePeriodSeconds: 20
       # Only the datapath (tc-loader/tracker) needs broad privilege.
       securityContext:
+        # Unconfined, NOT RuntimeDefault: the default Docker/containerd seccomp
+        # profile only permits bpf() and perf_event_open() when the process
+        # holds CAP_SYS_ADMIN. We grant BPF+PERFMON instead of SYS_ADMIN, so the
+        # syscall filter must be off; the capability set is the real boundary.
         seccompProfile:
-          type: RuntimeDefault
+          type: Unconfined
       containers:
       - name: map-sync
         image: __IMAGE__

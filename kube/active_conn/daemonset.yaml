@@ -1,0 +1,88 @@
+# active-conn DaemonSet: counts ACTIVE TCP connections per pod IP on every node.
+#
+# This is the signal source for least-connection. Chain:
+#   active-conn (this)  -> pod_connection_counts[podIP]  (+1 ESTABLISHED / -1 CLOSE)
+#   fentry (map_sync)   -> catches the map update -> ringbuf -> gRPC -> hash_map
+#   tc-loader           -> reads hash_map[podIP], picks the minimum -> selected
+#   tc datapath         -> DNATs new flows to `selected`
+#
+# NOTE: without this running, hash_map is never decremented and "least
+# connection" degrades to "fewest connections ever seen".
+#
+# Apply (image substituted by install.sh):
+#   sed "s|__IMAGE__|fchrgrib/active-conn:latest|g" kube/active_conn/daemonset.yaml | kubectl apply -f -
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: active-conn
+  labels:
+    app: active-conn
+spec:
+  selector:
+    matchLabels:
+      app: active-conn
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        app: active-conn
+    spec:
+      # Must run on every node that can host backend pods.
+      tolerations:
+      - operator: Exists
+      priorityClassName: system-node-critical
+      terminationGracePeriodSeconds: 20
+      serviceAccountName: active-conn
+      # Tracepoints are SYSTEM-WIDE: one attach sees every socket in every netns
+      # on this node. So unlike tc-loader, this needs neither hostNetwork nor
+      # hostPID -- the tightest profile of any container in this project.
+      hostNetwork: false
+      hostPID: false
+      securityContext:
+        # RuntimeDefault would BLOCK bpf() and perf_event_open(): the default
+        # Docker/containerd profile only allows those syscalls when the process
+        # holds CAP_SYS_ADMIN. We deliberately do NOT grant CAP_SYS_ADMIN, so we
+        # unconfine seccomp and rely on the minimal capability set instead.
+        # (Alternative: keep RuntimeDefault and add SYS_ADMIN -- a worse trade,
+        # since CAP_SYS_ADMIN is close to root.)
+        seccompProfile:
+          type: Unconfined
+      containers:
+      - name: active-conn
+        image: __IMAGE__
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          privileged: false
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+            # BPF: load the program. PERFMON: attach the tracepoint.
+            # SYS_RESOURCE: remove memlock. No SYS_ADMIN, no NET_ADMIN.
+            add: ["BPF", "PERFMON", "SYS_RESOURCE"]
+        volumeMounts:
+        # cilium/ebpf reads the tracepoint ID from tracefs. A container gets a
+        # fresh sysfs that does NOT include the host's tracefs submount, so it
+        # must be bind-mounted explicitly (read-only is enough).
+        - name: tracefs
+          mountPath: /sys/kernel/tracing
+          readOnly: true
+        - name: tmp
+          mountPath: /tmp
+        resources:
+          requests:
+            cpu: 25m
+            memory: 32Mi
+          limits:
+            cpu: 250m
+            memory: 128Mi
+      volumes:
+      - name: tracefs
+        hostPath:
+          path: /sys/kernel/tracing
+          type: Directory
+      - name: tmp
+        emptyDir: {}

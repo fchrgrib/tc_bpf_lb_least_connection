@@ -1,0 +1,10 @@
+# active-conn does NOT talk to the Kubernetes API at all -- it only attaches a
+# tracepoint and maintains an eBPF map. So it needs no RBAC rules, and we do not
+# even mount a token: if the container is compromised there is no API identity
+# to steal.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: active-conn
+  namespace: default
+automountServiceAccountToken: false
