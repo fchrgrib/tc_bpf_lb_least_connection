@@ -385,16 +385,21 @@ curl http://<any-node-ip>:30080/
 
 ## Uninstall
 
+One command stops the LB (same selection flags as the installer):
+
 ```bash
-kubectl delete -f kube/service/pt_daemonset.yaml
-kubectl delete -f kube/service/backend.yaml
-kubectl delete -f kube/service/lb_service.yaml
-kubectl delete -f kube/service/pt_rbac.yaml
+./kube/uninstall.sh            # base LB (tracker + tc-loader)
+./kube/uninstall.sh --all      # base LB + active-conn + map-sync
+ONLY=map-sync ./kube/uninstall.sh
+PURGE=1 ./kube/uninstall.sh --all   # also remove pinned eBPF maps on nodes
 ```
 
 Pod deletion triggers `SIGTERM` → `bpf_tc_detach`, then `preStop` deletes the
-`clsact` qdisc. If a node died hard and the qdisc is left behind, clean it manually
-on that node:
+`clsact` qdisc, so NodePort traffic immediately falls back to kube-proxy.
+Reinstall any time with `./kube/build-and-install.sh --all`.
+
+If a node died hard and the qdisc/maps are left behind, clean it manually on
+that node:
 
 ```bash
 tc qdisc del dev <iface> clsact
@@ -465,5 +470,6 @@ kube/service/      pt_rbac.yaml, pt_daemonset.yaml, lb_service.yaml, backend.yam
 kube/map_sync/     hardened map_sync: cert-manager mTLS, NetworkPolicy, DaemonSet
 kube/active_conn/  active-conn: tracepoint DaemonSet, RBAC
 kube/build-and-install.sh  one-shot build + install (--all, or ONLY=<comp>)
+kube/uninstall.sh  one-shot stop + remove (--all, or ONLY=<comp>, PURGE=1)
 kube/verify.sh     preflight + health check (read-only)
 ```

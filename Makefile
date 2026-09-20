@@ -1,4 +1,4 @@
-.PHONY: all build clean go help
+.PHONY: all build clean go help install install-all uninstall stop
 
 # Unified build system for TC eBPF Load Balancer
 # All build artifacts go to ./build/
@@ -9,6 +9,8 @@ help:
 	@echo "Usage:"
 	@echo "  make build      - Build all Go components (includes BPF compilation)"
 	@echo "  make go         - Build Go userspace only"
+	@echo "  make install    - Install base LB to Kubernetes"
+	@echo "  make uninstall  - Stop + remove base LB from Kubernetes (stop)"
 	@echo "  make clean      - Clean all build artifacts"
 	@echo "  make help       - Show this help"
 	@echo ""
@@ -34,6 +36,18 @@ clean:
 # Install to Kubernetes (convenience wrapper)
 install:
 	@./kube/build-and-install.sh
+
+install-all:
+	@./kube/build-and-install.sh --all
+
+# Stop + remove from Kubernetes (convenience wrappers)
+uninstall:
+	@./kube/uninstall.sh
+
+stop: uninstall
+
+uninstall-all:
+	@./kube/uninstall.sh --all
 
 # Install with custom service
 install-custom:
