@@ -27,6 +27,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=builder /tc-loader /app/tc-loader
-COPY bpf/user_space/tc/entrypoint.sh /app/entrypoint.sh
-RUN chmod +x /app/tc-loader /app/entrypoint.sh
-ENTRYPOINT ["/app/entrypoint.sh"]
+RUN chmod +x /app/tc-loader
+# Iface detection (LB_IFACE, default route, else first non-lo) lives in tc.go.
+# iproute2 stays for the DaemonSet preStop hook (tc qdisc del).
+ENTRYPOINT ["/app/tc-loader"]

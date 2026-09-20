@@ -1,4 +1,4 @@
-.PHONY: all build clean pods-watcher map-sync tc-loader active-conn
+.PHONY: all build clean pods-watcher map-sync tc-loader active-conn test
 
 # Centralized build output (repo root ./build)
 BUILD_ROOT := $(abspath ../../build)
@@ -7,6 +7,11 @@ GO_BUILD := $(BUILD_ROOT)/go
 all: build
 
 build: pods-watcher map-sync tc-loader active-conn
+
+test:
+	@echo "Running Go tests..."
+	@go test ./...
+	@echo "✓ Tests passed"
 
 pods-watcher:
 	@echo "Building pods-watcher..."
@@ -38,7 +43,6 @@ active-conn:
 clean:
 	@rm -rf $(GO_BUILD)
 	@rm -f tc/tc_x86_bpfel.go tc/tc_x86_bpfel.o
-	@rm -f map_sync/fentry_x86_bpfel.go map_sync/fentry_x86_bpfel.o
 	@rm -f trace/tracepoint_x86_bpfel.go trace/tracepoint_x86_bpfel.o
 	@echo "✓ Cleaned Go binaries and generated BPF files"
 

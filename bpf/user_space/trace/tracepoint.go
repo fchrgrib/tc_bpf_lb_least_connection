@@ -1,16 +1,3 @@
-// active-conn: counts ACTIVE TCP connections per pod IP.
-//
-// This is the "Active Connection Program" from the design: it attaches to
-// tracepoint/sock/inet_sock_set_state and maintains
-//
-//	+1 on TCP_ESTABLISHED, -1 on TCP_CLOSE
-//
-// keyed by the POD's own address (the server-side socket's local address),
-// which is exactly the key the least-connection selector looks up.
-//
-// The map is intentionally NOT pinned: fentry hooks htab_map_update_elem
-// globally, so map_sync picks up these updates and syncs them into the pinned
-// hash_map regardless. Pinning is only useful for manual inspection.
 package main
 
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go -target amd64 -cc clang tracepoint ../../data_plane/trace/tracepoint.bpf.c -- -I../../../lib/vmlinux.h/include/x86 -I../../../lib/libbpf/include/uapi

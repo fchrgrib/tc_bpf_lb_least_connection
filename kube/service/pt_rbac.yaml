@@ -5,9 +5,9 @@ metadata:
   namespace: __NAMESPACE__
 
 ---
-# Namespace-scoped Role: the tracker only reads pods/services in ONE namespace
-# (LB_NAMESPACE). A cluster-wide ClusterRole is unnecessary and broadens the
-# blast radius of a token leak. __NAMESPACE__ is substituted by build-and-install.sh.
+# Namespace-scoped Role: the tracker reads Services + EndpointSlices in ONE
+# namespace. A cluster-wide ClusterRole is unnecessary and broadens the blast
+# radius of a token leak. __NAMESPACE__ is substituted by build-and-install.sh.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -15,7 +15,10 @@ metadata:
   namespace: __NAMESPACE__
 rules:
 - apiGroups: [""]
-  resources: ["pods", "services"]
+  resources: ["services"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["discovery.k8s.io"]
+  resources: ["endpointslices"]
   verbs: ["get", "list", "watch"]
 
 ---

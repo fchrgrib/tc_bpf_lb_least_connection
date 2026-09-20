@@ -1,6 +1,6 @@
 # active-conn image: counts active TCP connections per pod IP via
 # tracepoint/sock/inet_sock_set_state. This is the signal source that feeds
-# fentry -> map_sync -> hash_map -> the least-connection selector.
+# map_sync -> remote_counts -> the least-connection selector.
 #
 # Built from the REPO ROOT:
 #   docker build -f bpf/user_space/trace/Dockerfile -t <registry>/active-conn:latest .

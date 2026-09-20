@@ -1,13 +1,12 @@
 # active-conn DaemonSet: counts ACTIVE TCP connections per pod IP on every node.
 #
 # This is the signal source for least-connection. Chain:
-#   active-conn (this)  -> pod_conn_counts[podIP]  (+1 ESTABLISHED / -1 CLOSE)
-#   fentry (map_sync)   -> catches the map update -> ringbuf -> gRPC -> hash_map
-#   tc-loader           -> reads hash_map[podIP], picks the minimum -> selected
-#   tc datapath         -> DNATs new flows to `selected`
+#   active-conn (this)  -> hash_map[podIP]  (+1 ESTABLISHED / -1 CLOSE, port-scoped)
+#   map-sync            -> snapshots hash_map to peers -> remote_counts
+#   tc datapath         -> reads hash_map + remote_counts, P2C picks a backend -> DNAT
 #
-# NOTE: without this running, hash_map is never decremented and "least
-# connection" degrades to "fewest connections ever seen".
+# NOTE: without this running, counts stay at zero and the datapath effectively
+# falls back to a random choice among healthy backends.
 #
 # Apply (image substituted by install.sh):
 #   sed "s|__IMAGE__|fchrgrib/active-conn:latest|g" kube/active_conn/daemonset.yaml | kubectl apply -f -

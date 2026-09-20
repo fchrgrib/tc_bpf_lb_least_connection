@@ -35,7 +35,7 @@ else
   echo; echo "Cannot continue without cluster access."; exit 1
 fi
 
-hdr "2. Nodes (kernel >= 5.8 for CAP_BPF; >= 5.5 minimum for fentry)"
+hdr "2. Nodes (kernel >= 5.8 for CAP_BPF; >= 5.5 minimum for TC-BPF)"
 NODES=$(kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.nodeInfo.kernelVersion}{" "}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}')
 if [ -z "$NODES" ]; then
   fail "no nodes found"
@@ -45,7 +45,7 @@ else
     if [ "$ready" = "True" ]; then
       if kver_ge "$kver" "5.8"; then ok "$name  kernel=$kver  Ready"
       elif kver_ge "$kver" "5.5"; then warn "$name  kernel=$kver  Ready (no CAP_BPF: add SYS_ADMIN to containers)"
-      else fail "$name  kernel=$kver  TOO OLD (need >=5.5 for fentry)"
+      else fail "$name  kernel=$kver  TOO OLD (need >=5.5 for TC-BPF)"
       fi
     else
       fail "$name  kernel=$kver  NOT Ready"
@@ -102,8 +102,8 @@ if kubectl -n "$NS" get svc "$SVC" >/dev/null 2>&1; then
   STP=$(kubectl -n "$NS" get svc "$SVC" -o jsonpath='{.spec.ports[0].targetPort}')
   SEL=$(kubectl -n "$NS" get svc "$SVC" -o jsonpath='{.spec.selector}')
   ok "Service $NS/$SVC nodePort=$SNP targetPort=$STP selector=$SEL"
-  [ "$SNP" = "$NODEPORT" ] && ok "nodePort matches LB_NODEPORT ($NODEPORT)" || warn "service nodePort=$SNP but expected $NODEPORT"
-  [ "$STP" = "$TARGET_PORT" ] && ok "targetPort matches LB_TARGET_PORT ($TARGET_PORT)" || warn "service targetPort=$STP but expected $TARGET_PORT"
+  [ -n "$SNP" ] && [ "$SNP" != "0" ] && ok "nodePort is set ($SNP)" || fail "Service has no nodePort"
+  [ -n "$STP" ] && [ "$STP" != "0" ] && ok "numeric targetPort ($STP)" || warn "targetPort is named/empty; tracker falls back to spec.port"
   EPS=$(kubectl -n "$NS" get endpoints "$SVC" -o jsonpath='{.subsets[*].addresses[*].ip}' 2>/dev/null)
   [ -n "$EPS" ] && ok "backend endpoints exist: $EPS" || fail "no backend endpoints — service selector matches no ready pods"
 else
@@ -143,7 +143,7 @@ else
   # pinned maps
   MAPS=$($EX sh -c 'ls /sys/fs/bpf 2>/dev/null | tr "\n" " "' 2>/dev/null)
   echo "  /sys/fs/bpf: ${MAPS:-<empty>}"
-  for m in service_pod_ips selected; do
+  for m in svc_map backends svc_ports hash_map remote_counts; do
     echo "$MAPS" | grep -q "$m" && ok "pinned map: $m" || warn "pinned map missing: $m"
   done
 fi

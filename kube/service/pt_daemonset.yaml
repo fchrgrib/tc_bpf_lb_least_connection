@@ -1,5 +1,5 @@
 # Least-privilege LB agents. Only the datapath needs node-level access:
-#   - tracker   : writes the pinned service_pod_ips map        (BPF, SYS_RESOURCE)
+#   - tracker   : writes svc_map/backends/svc_ports       (BPF, SYS_RESOURCE)
 #   - tc-loader : attaches the TC program to the host iface   (BPF, NET_ADMIN, SYS_RESOURCE)
 # Neither needs privileged, hostPID, nor SYS_ADMIN.
 # Images are digest-pinned by build-and-install.sh after push.
@@ -57,7 +57,7 @@ spec:
         - name: bpf-fs
           mountPath: /sys/fs/bpf
       containers:
-      # 1) Watches Pods/Services, maintains /sys/fs/bpf/service_pod_ips.
+      # 1) Watches Services/EndpointSlices, writes svc_map + backends.
       - name: tracker
         image: fchrgrib/pod-ip-tracker:latest
         imagePullPolicy: IfNotPresent
@@ -78,12 +78,18 @@ spec:
           seccompProfile:
             type: Unconfined
         env:
-        - name: USE_INCLUSTER_CONFIG
-          value: "true"
-        - name: LB_SERVICE_NAME
-          value: "test-service"
+        # How the tracker chooses Services:
+        #   LB_SERVICE_SELECTOR set  -> balance every matching Service
+        #   LB_SERVICE_NAME set      -> balance exactly that Service
+        #   both empty               -> balance every NodePort Service in LB_NAMESPACE
         - name: LB_NAMESPACE
           value: "default"
+        - name: LB_SERVICE_SELECTOR
+          value: ""
+        - name: LB_SERVICE_NAME
+          value: ""
+        - name: METRICS_ADDR
+          value: ":9101"
         volumeMounts:
         - name: lib-modules
           mountPath: /lib/modules
@@ -117,16 +123,9 @@ spec:
           seccompProfile:
             type: Unconfined
         env:
+        # The tracker owns svc_map/backends; the loader only needs the iface.
         - name: LB_IFACE
           value: ""
-        - name: LB_NODEPORT
-          value: "30080"
-        - name: LB_TARGET_PORT
-          value: "8000"
-        - name: LB_BE1
-          value: "auto"
-        - name: LB_BE2
-          value: "auto"
         volumeMounts:
         - name: lib-modules
           mountPath: /lib/modules

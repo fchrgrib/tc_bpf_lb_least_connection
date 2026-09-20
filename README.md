@@ -14,17 +14,17 @@ while others sit idle.
 
 This project replaces that decision point **per node, inside the kernel**:
 
-1. `tracker` (`bpf/user_space/pods_watcher`) watches your Service's ready Pod IPs through
-   the K8s API and keeps them in a pinned eBPF map
-   (`/sys/fs/bpf/service_pod_ips`) — always current as Pods scale/churn.
+1. `tracker` (`bpf/user_space/pods_watcher`) watches the Services you opt in
+   through the K8s API and keeps each one's ready backends in pinned eBPF maps
+   (`/sys/fs/bpf/svc_map` + `/sys/fs/bpf/backends`), always current as Pods scale.
 2. The TC program (`bpf/data_plane/tc`) attaches at **ingress** on each node's
-   physical iface. For a new TCP/UDP flow to your `nodePort`, it DNATs the
-   packet to the currently least-loaded backend (plus SNAT/masquerade) using
-   kernel conntrack (`bpf_skb_ct_*`), so return traffic works with no userspace hop.
-3. The loader (`bpf/user_space/tc`) re-evaluates every 2s: it reads live backend IPs
-   plus per-backend connection counts (`hash_map`, optionally synced across
-   nodes by `bpf/user_space/map_sync` via fentry + gRPC) and writes the winner into the
-   `selected` map the datapath reads.
+   physical iface. For a new TCP/UDP flow to a balanced `nodePort`, it picks a
+   backend itself (power-of-two choices on the live counts) and DNATs the packet
+   (plus SNAT/masquerade) using kernel conntrack (`bpf_skb_ct_*`), so return
+   traffic works with no userspace hop.
+3. `active-conn` (`bpf/user_space/trace`) counts active connections per pod IP
+   from a tracepoint, and `map_sync` (`bpf/user_space/map_sync`) snapshots those
+   per-node counts to peers, so every node sees a cluster-wide load view.
 
 In short: **any traffic hitting `<any-node-ip>:<nodePort>` gets steered in-kernel
 to whichever backend Pod currently holds the fewest connections.**
@@ -46,8 +46,8 @@ to whichever backend Pod currently holds the fewest connections.**
   or rolling updates don't leave stale backends.
 - **Zero-touch scaling of the LB itself.** DaemonSet = new nodes self-install,
   removed nodes self-clean (`SIGTERM` detach + `preStop` qdisc removal). One
-  manifest works for any Service/NodePort via env (`LB_SERVICE_NAME`,
-  `LB_NAMESPACE`, `LB_NODEPORT`, `LB_TARGET_PORT`).
+  manifest works for any Service via env (`LB_NAMESPACE`,
+  `LB_SERVICE_SELECTOR` or `LB_SERVICE_NAME`).
 - **Cheap to try per Service.** Point it at one `NodePort` Service first
   (e.g. the heaviest long-connection API), leave the rest on kube-proxy.
 
@@ -56,13 +56,11 @@ to whichever backend Pod currently holds the fewest connections.**
 
 ## Limitations (please read before production use)
 
-- **One Service per DaemonSet install.** The tracker watches a single
-  `LB_SERVICE_NAME`/`LB_NAMESPACE`, and `svc_map` holds the active NodePort.
-  Balancing N Services needs N DaemonSet copies (different names/selectors) or
-  a multi-service extension.
+- **Up to 64 Services per install.** `MAX_SERVICES` slots, each with up to
+  `MAX_BACKENDS` (256) backends. Beyond that the tracker logs and skips; raise
+  the constants (and re-pin the maps) for more.
 - **NodePort Services only.** No `ClusterIP`-only or `LoadBalancer` support;
-  `LB_NODEPORT` (1–65535) must equal the Service's `nodePort`, `LB_TARGET_PORT`
-  must equal its `targetPort`/`containerPort`.
+  the Service must have a numeric `nodePort` and `targetPort`.
 - **IPv4 TCP/UDP only.** The datapath (`tc.bpf.c`) parses `ETH_P_IP` + TCP/UDP
   tuples; other protocols pass through untouched, IPv6 is not NATed.
 - **Kernel requirement.** Needs TC-BPF with `clsact` plus `bpf_skb_ct_*`
@@ -78,12 +76,14 @@ to whichever backend Pod currently holds the fewest connections.**
   `be1/be2` as fallback (live set comes from the tracker map, capped at 100
   entries in `ebpfMapSpec`), `hash_map` at 10240 entries. Tune `MaxEntries` for
   larger fleets.
-- **Eventual consistency (~2s + resync).** Backend election runs every 2s and the
-  Pod watch resyncs every 15 min as backup — brief imbalance is possible right
-  after scale/rollout events.
-- **Per-node counts by default.** Without deploying `bpf/user_space/map_sync` (fentry +
-  gRPC peer sync, installed by `--all`), each node balances on locally observed
-  connection counts rather than a global view.
+- **Eventual consistency.** Backends follow EndpointSlices (ready-only) with a
+  15s heartbeat reconcile; cross-node counts are snapshotted every 3s, so brief
+  imbalance is possible right after scale/rollout events.
+- **Counts lag.** The datapath samples the live maps, but counts are produced by
+  a tracepoint and can be ~3s stale across nodes.
+- **Per-node counts by default.** Without deploying `bpf/user_space/map_sync`
+  (snapshot gRPC peer sync, installed by `--all`), each node balances on locally
+  observed counts only.
 - **No L7 features.** No TLS termination, header/path routing, retries, rate
   limiting, or Prometheus metrics — it is a pure L3/L4 least-conn steerer.
   Health checking = K8s readiness only (unready Pods are excluded on next sync).
@@ -102,14 +102,13 @@ like TC ingress — no kernel rebuild, no module, detachable at runtime. This
 project uses exactly that:
 
 - **Datapath in kernel (`bpf/data_plane/tc`, hook `tc_ingress`).** Every packet to
-  your `nodePort` is inspected before it climbs the normal stack. New flows get
-  NAT decision + connection counting via eBPF maps (`svc_map`, `hash_map`,
-  `selected`); established flows hit existing conntrack entries and pass
-  through. No per-packet trip to userspace.
-- **Control plane in userspace.** K8s watch (`tracker`), least-conn election
-  (`tc.c` loop), and cross-node sync (`map_sync` fentry on map updates + gRPC)
-  just read/write those same maps. Kernel and userspace share state through
-  maps, not syscalls per packet.
+  a balanced `nodePort` is inspected before it climbs the normal stack. New flows
+  get the least-connection pick + NAT via eBPF maps (`svc_map`, `backends`,
+  `hash_map`, `remote_counts`); established flows hit existing conntrack entries
+  and pass through. No per-packet trip to userspace.
+- **Control plane in userspace.** K8s watch (`tracker`) and cross-node count
+  sync (`map_sync` periodic snapshots + gRPC) just read/write those same maps.
+  Kernel and userspace share state through maps, not syscalls per packet.
 
 Benefits over the usual alternatives:
 
@@ -132,31 +131,28 @@ DaemonSets with tighter privileges:
 
 | Component | Source | Job |
 |---|---|---|
-| `tracker` | `bpf/user_space/pods_watcher` | Watches the Service's Pods via the K8s API, maintains pinned map `/sys/fs/bpf/service_pod_ips` |
-| `tc-loader` | `bpf/user_space/tc` | Attaches the TC eBPF program (`bpf/data_plane/tc`) to the host iface; every 2s picks the least-loaded backend into `selected` |
-| `active-conn` | `bpf/user_space/trace` + `bpf/data_plane/trace` | **Counts active connections per pod IP** — `+1` on `TCP_ESTABLISHED`, `-1` on `TCP_CLOSE` |
-| `map-sync` | `bpf/user_space/map_sync` + `bpf/data_plane/fentry` | fentry catches those map updates → ringbuf → gRPC → merges every node's counts into the pinned `hash_map` |
+| `tracker` | `bpf/user_space/pods_watcher` | Watches opted-in Services + EndpointSlices; writes `/sys/fs/bpf/svc_map`, `/sys/fs/bpf/backends`, `/sys/fs/bpf/svc_ports` |
+| `tc-loader` | `bpf/user_space/tc` | Attaches the TC program (`bpf/data_plane/tc`) to the host iface. No routing logic and no timers |
+| `active-conn` | `bpf/user_space/trace` + `bpf/data_plane/trace` | **Counts active server-side connections per pod IP** — `+1` ESTABLISHED, `-1` CLOSE, scoped to balanced target ports (`hash_map`) |
+| `map-sync` | `bpf/user_space/map_sync` | Periodically snapshots the local `hash_map` to peers and writes their sum into `remote_counts` (mTLS gRPC) |
 
 The chain that makes least-connection correct:
 
 ```
-active-conn  pod_conn_counts[podIP]  (+1 establish / -1 close)
-    ↓ fentry hook on htab_map_update_elem
-map-sync     → ringbuf → gRPC peers → hash_map[podIP]   (cluster-wide view)
-    ↓
-tc-loader    reads hash_map[podIP], picks the minimum → selected
-    ↓
-tc datapath  DNATs each new flow to `selected`
+active-conn   hash_map[podIP]        (+1 establish / -1 close, port-scoped)
+     ↓ map-sync snapshot (every 3s, mTLS gRPC)
+map-sync      remote_counts[podIP]   (sum of peers' counts)
+     ↓
+tc datapath   per NEW flow: P2C over (hash_map + remote_counts) → DNAT
 ```
 
-> **`active-conn` is not optional.** Without it nothing ever decrements, so
-> `hash_map` only grows and "least connection" silently degrades into "fewest
-> connections *ever seen*". Install it with `./kube/build-and-install.sh --all`
-> (or `ONLY=active-conn ./kube/build-and-install.sh`).
+> **`active-conn` is not optional.** Without it the counts stay at zero, so the
+> datapath falls back to a random choice among healthy backends. Install it with
+> `./kube/build-and-install.sh --all` (or `ONLY=active-conn ./kube/build-and-install.sh`).
 
 Supporting pieces:
 
-- `kube/service/pt_rbac.yaml` — ServiceAccount + namespace-scoped `Role`/`RoleBinding` (`get,list,watch` on `pods,services`).
+- `kube/service/pt_rbac.yaml` — ServiceAccount + namespace-scoped `Role`/`RoleBinding` (`get,list,watch` on `services,endpointslices`).
 - `kube/service/lb_service.yaml` — demo `NodePort` Service (`nodePort: 30080`, `targetPort: 8000`).
 - `kube/service/backend.yaml` — demo backend Deployment (3x `flask-backend` on port 8000).
 - `bpf/user_space/tc` — auto-detects the host iface per node (see Configuration).
@@ -286,70 +282,60 @@ ONLY=map-sync    ./kube/build-and-install.sh   # cross-node map sync
 
 After installation, the full chain is:
 ```
-active-conn  +1 ESTABLISHED / -1 CLOSE  pod_conn_counts[podIP]
-    ↓ fentry hook
-map-sync     → ringbuf → gRPC peers → hash_map[podIP] (cross-node)
-    ↓
-tc-loader    reads hash_map[podIP], picks minimum → selected
-    ↓
-tc datapath  DNATs each new flow to `selected`
+active-conn   +1 ESTABLISHED / -1 CLOSE  hash_map[podIP]  (port-scoped)
+     ↓ map-sync snapshot (mTLS gRPC)
+map-sync      remote_counts[podIP]       (peers' counts)
+     ↓
+tc datapath   per new flow: P2C over hash_map + remote_counts → DNAT
 ```
 
 ### Adding / removing nodes
 
 ## Configuration
 
-No rebuild needed to switch Service / NodePort — everything is env-driven.
-`LB_NODEPORT` accepts any `1-65535`; backend IPs are optional (`auto` =
-dynamic-only from the tracker map).
+No rebuild needed to add or switch Services — the tracker reads the cluster and
+writes maps; the datapath makes decisions per new flow.
 
-| Container | Env | Default | Meaning |
+| Container | Env / Flag | Default | Meaning |
 |---|---|---|---|
-| `tracker` | `LB_SERVICE_NAME` | `test-service` | Which Service to balance. Any selector keys work (not just `app=`). |
-| `tracker` | `LB_NAMESPACE` | `default` | Namespace of that Service. |
-| `tc-loader` | `LB_NODEPORT` | `30080` | Must equal your Service's `nodePort`. Old `svc_map` entries for other ports are deleted on startup. |
-| `tc-loader` | `LB_TARGET_PORT` | `8000` | Must equal backend `containerPort` / Service `targetPort`. Used in DNAT. |
-| `tc-loader` | `LB_IFACE` | `""` (auto) | Host iface. Empty = `ip route get 1.1.1.1` → `dev`, fallback first non-`lo`. Set explicitly (e.g. `ens3`) on multi-NIC nodes. |
-| `tc-loader` | `LB_BE1` / `LB_BE2` | `auto` | Optional static fallbacks for `svc_map`. Live IPs come from the tracker map. |
-| `active-conn` | `-tls-cert` / `-tls-key` | `""` | TLS keypair for mTLS (empty = plaintext, warns). |
-| `active-conn` | `-tls-ca` | `""` | CA bundle; enables mutual TLS. |
-| `active-conn` | `-tls-server-name` | `""` | Expected cert SAN when dialing peers. |
-| `active-conn` | `-peer-dns` | `""` | Headless service DNS for peer discovery (preferred). |
-| `active-conn` | `-ip` | `""` | Legacy single peer to sync to. |
-| `active-conn` | `-pod-ip` | `$POD_IP` | This pod's own IP (excluded from peers). |
-| `active-conn` | `-port` | `50051` | gRPC listen port. |
-| `active-conn` | `-tls-cert` | `""` | TLS cert path. |
-| `active-conn` | `-tls-key` | `""` | TLS key path. |
-| `active-conn` | `-tls-ca` | `""` | CA bundle path. |
-| `active-conn` | `-tls-server-name` | `""` | Expected cert SAN when dialing peers. |
+| `tracker` | `LB_NAMESPACE` | `default` | Namespace to watch. |
+| `tracker` | `LB_SERVICE_SELECTOR` | `""` | Balance every Service matching this label selector. |
+| `tracker` | `LB_SERVICE_NAME` | `""` | Otherwise, balance exactly this one Service. Both empty = every NodePort Service in the namespace. |
+| `tc-loader` | `LB_IFACE` | `""` (auto) | Host iface. Empty = default route, else first non-`lo`. |
+| `map-sync` | `-interval` | `3s` | Snapshot publish period. |
+| `map-sync` | `-peer-ttl` | `15s` | Drop a silent peer's counts after this. |
+| `map-sync` | `-peer-dns` / `-ip` / `-pod-ip` / `-port` | | Peer discovery / identity. |
+| `map-sync` | `-tls-cert` / `-tls-key` / `-tls-ca` / `-tls-server-name` | | mTLS credentials. |
 
-### Use your own Service / NodePort
+### Add a Service
+
+Create a `NodePort` Service with a numeric `targetPort`, then register it once:
 
 ```bash
-# At install time:
-SERVICE_NAME=my-api NAMESPACE=prod NODEPORT=31001 TARGET_PORT=8080 ./kube/build-and-install.sh
+# Option A: label it (paired with LB_SERVICE_SELECTOR on the tracker)
+kubectl label svc/my-api -n prod lb.example.com/enabled=true
 
-# Or switch an existing install (restarts DaemonSet Pods, ~seconds):
-kubectl set env ds/pod-ip-tracker -c tracker LB_SERVICE_NAME=my-api LB_NAMESPACE=prod
-kubectl set env ds/pod-ip-tracker -c tc-loader LB_NODEPORT=31001 LB_TARGET_PORT=8080
-kubectl rollout status ds/pod-ip-tracker
+# Option B: pin it by name (LB_SERVICE_NAME=my-api)
 ```
 
-Requirements for your Service: type `NodePort` (or any Service with a `nodePort`
-number), plus a non-empty `.spec.selector` so the tracker can find its Pods.
-Example:
+The tracker picks it up on the next watch event / 15s heartbeat — **no redeploy**.
+Remove the label (or delete the Service) to stop balancing it; existing
+connections drain.
 
 ```yaml
 apiVersion: v1
 kind: Service
-metadata: { name: my-api, namespace: prod }
+metadata:
+  name: my-api
+  namespace: prod
+  labels: { lb.example.com/enabled: "true" }
 spec:
   type: NodePort
   selector: { app: my-api }
   ports:
   - port: 80
     targetPort: 8080
-    nodePort: 31001   # <- set LB_NODEPORT to this
+    nodePort: 31001
 ```
 
 ## Verify it works
@@ -373,32 +359,66 @@ kubectl get pods -o wide -l app=pod-ip-tracker
 
 # Tracker is syncing pod IPs
 kubectl logs -l app=pod-ip-tracker -c tracker --tail=20
-# expect: "Updated eBPF map with 3 pod IPs for service test-service"
+# expect: service default/test-service: nodePort 30080 -> 3 backend(s)
 
 # TC program attached on the node (run on the node itself)
 tc filter show dev $(ip route get 1.1.1.1 | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}') ingress
-ls -l /sys/fs/bpf/service_pod_ips /sys/fs/bpf/selected
+ls -l /sys/fs/bpf/svc_map /sys/fs/bpf/backends /sys/fs/bpf/hash_map /sys/fs/bpf/remote_counts
 
 # Traffic test (NodePort from outside or localhost on node)
 curl http://<any-node-ip>:30080/
 ```
 
+## Metrics
+
+Plain Prometheus text — no client library, just scrape the endpoint.
+
+**`tracker`** on `:9101/metrics` (override with `METRICS_ADDR`):
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `lb_services` | gauge | Services currently balanced |
+| `lb_balanced_ports` | gauge | Target ports counted by the tracepoint |
+| `lb_backends{service,node_port}` | gauge | Ready backends per Service |
+| `lb_backend_connections{service,backend_ip}` | gauge | Active connections per backend (local + remote) |
+| `lb_flows_assigned_total{service}` | counter | New flows DNATed by the datapath |
+| `lb_no_backend_total{service}` | counter | New flows with no healthy backend (fell back) |
+| `lb_stale_fallback_total{service}` | counter | New flows skipped while the control plane was stale |
+
+**`map-sync`** on `:9102/metrics` (`-metrics-addr`):
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `lb_sync_peers` | gauge | Peers contributing counts |
+| `lb_sync_entries` | gauge | Pod IPs currently in `remote_counts` |
+| `lb_sync_write_errors_total` | counter | Failed writes to `remote_counts` |
+| `lb_sync_last_apply_age_seconds` | gauge | Age of the last applied peer snapshot |
+
+`lb_backend_connections` is the distribution metric for evaluating the
+algorithm: scrape it during a load test to see how evenly connections land.
+
 ## Uninstall
 
+One command stops the LB (same selection flags as the installer):
+
 ```bash
-kubectl delete -f kube/service/pt_daemonset.yaml
-kubectl delete -f kube/service/backend.yaml
-kubectl delete -f kube/service/lb_service.yaml
-kubectl delete -f kube/service/pt_rbac.yaml
+./kube/uninstall.sh            # base LB (tracker + tc-loader)
+./kube/uninstall.sh --all      # base LB + active-conn + map-sync
+ONLY=map-sync ./kube/uninstall.sh
+PURGE=1 ./kube/uninstall.sh --all   # also remove pinned eBPF maps on nodes
 ```
 
 Pod deletion triggers `SIGTERM` → `bpf_tc_detach`, then `preStop` deletes the
-`clsact` qdisc. If a node died hard and the qdisc is left behind, clean it manually
-on that node:
+`clsact` qdisc, so NodePort traffic immediately falls back to kube-proxy.
+Reinstall any time with `./kube/build-and-install.sh --all`.
+
+If a node died hard and the qdisc/maps are left behind, clean it manually on
+that node:
 
 ```bash
 tc qdisc del dev <iface> clsact
-rm -f /sys/fs/bpf/service_pod_ips /sys/fs/bpf/selected /sys/fs/bpf/hash_map
+rm -f /sys/fs/bpf/svc_map /sys/fs/bpf/backends /sys/fs/bpf/svc_ports \
+      /sys/fs/bpf/hash_map /sys/fs/bpf/remote_counts
 ```
 
 ## Security posture
@@ -414,7 +434,7 @@ limits:
 
 | Container | Capabilities | Why |
 |---|---|---|
-| `tracker` | `BPF`, `SYS_RESOURCE` | create/pin the `service_pod_ips` map |
+| `tracker` | `BPF`, `SYS_RESOURCE` | open + write `svc_map`, `backends`, `svc_ports` |
 | `tc-loader` | `BPF`, `NET_ADMIN`, `SYS_RESOURCE` | load program, attach TC, conntrack |
 | `mount-bpf-fs` (init) | `SYS_ADMIN` | `mount(2)` bpffs only |
 
@@ -447,23 +467,24 @@ ordinary, locked-down workload.
   the binary uses in-cluster config — no `KUBECONFIG` needed inside the Pod.
   Local `go run` falls back to `$KUBECONFIG` or `~/.kube/config`.
 - **`tc-loader` CrashLoop**: `kubectl logs -l app=pod-ip-tracker -c tc-loader`;
-  usually wrong `LB_IFACE` or `LB_NODEPORT` out of `30000-32000` range.
+  usually a wrong `LB_IFACE` or the pinned maps couldn't be created (spec
+  mismatch with a previously pinned map — delete `/sys/fs/bpf/svc_map` etc.).
 - **Stale `clsact` after force-deleted Pod**: run the manual cleanup above.
 
 ## Project layout
 
 ```text
 bpf/data_plane/tc/        tc.bpf.c (datapath - kernel space)
-bpf/data_plane/fentry/    fentry tracing for map sync
 bpf/data_plane/trace/     tracepoint.bpf.c (kernel space)
-bpf/user_space/tc/        tc.go (loader/least-conn loop), Dockerfile, entrypoint.sh
+bpf/user_space/tc/        tc.go (datapath attach + iface detection), Dockerfile
 bpf/user_space/trace/     tracepoint.go (active-connection loader), Dockerfile
-bpf/user_space/pods_watcher/ tracker daemon (Pod watch → pinned eBPF map), Dockerfile
-bpf/user_space/map_sync/  cross-node hash_map sync via gRPC, Dockerfile
+bpf/user_space/pods_watcher/ tracker daemon (Services → svc_map/backends), Dockerfile
+bpf/user_space/map_sync/  snapshot-based cross-node count sync via gRPC, Dockerfile
 lib/               submodules: libbpf, bpftool, vmlinux.h, blazesym
 kube/service/      pt_rbac.yaml, pt_daemonset.yaml, lb_service.yaml, backend.yaml
 kube/map_sync/     hardened map_sync: cert-manager mTLS, NetworkPolicy, DaemonSet
 kube/active_conn/  active-conn: tracepoint DaemonSet, RBAC
 kube/build-and-install.sh  one-shot build + install (--all, or ONLY=<comp>)
+kube/uninstall.sh  one-shot stop + remove (--all, or ONLY=<comp>, PURGE=1)
 kube/verify.sh     preflight + health check (read-only)
 ```

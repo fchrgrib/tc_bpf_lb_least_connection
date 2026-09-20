@@ -1,8 +1,9 @@
 # map_sync: secure cross-node map sync (mTLS + NetworkPolicy)
 
 This hardens the optional `map_sync` component. It keeps the same function
-(sync `hash_map` connection counts between nodes) but removes the two biggest
-risks: **unauthenticated/plaintext gRPC** and **runnning on the host network**.
+(snapshot each node's local `hash_map` and aggregate peers' counts into
+`remote_counts`) but removes the two biggest risks:
+**unauthenticated/plaintext gRPC** and **runnning on the host network**.
 
 ## Security model
 
@@ -10,7 +11,7 @@ risks: **unauthenticated/plaintext gRPC** and **runnning on the host network**.
 scope reduction  : map_sync runs on the POD network, not hostNetwork
 network policy   : only map_sync pods may reach :50051
 mTLS             : cert-manager issues a CA + workload cert; peers verify each other
-least privilege  : no privileged, no hostPID, drops ALL caps, adds BPF/PERFMON/SYS_RESOURCE
+least privilege  : no privileged, no hostPID, drops ALL caps, adds only BPF
 ```
 
 Only the datapath (`tracker`, `tc-loader`) stays privileged. The control plane
@@ -130,6 +131,9 @@ All via `args:` in `kube/map_sync/daemonset.yaml`:
 | Flag | Default | Meaning |
 |---|---|---|
 | `-port` | `50051` | gRPC listen port |
+| `-interval` | `3s` | How often to publish a full snapshot of local counts |
+| `-peer-ttl` | `15s` | Drop a silent peer's counts after this long |
+| `-metrics-addr` | `:9102` | Prometheus metrics listen address |
 | `-peer-dns` | `""` | Headless service DNS for peer discovery (preferred) |
 | `-ip` | `""` | Legacy single peer to sync to |
 | `-pod-ip` | `$POD_IP` | This pod's IP, excluded from peers |
@@ -152,7 +156,7 @@ kubectl delete -f kube/map_sync/cert-manager.yaml   # remove CA + issuer
 
 - **Pod `CreateContainerConfigError` / TLS file missing** → the `map-sync-tls`
   Secret isn't ready yet. Check `kubectl describe certificate map-sync-tls`.
-- **`permission denied` loading fentry** → kernel < 5.8 without `CAP_BPF`.
+- **`permission denied` opening pinned maps** → kernel < 5.8 without `CAP_BPF`.
   Add `SYS_ADMIN` to the capability list (and accept the broader grant).
 - **Peers not found** → check the Service has endpoints:
   `kubectl get endpoints map-sync`; `publishNotReadyAddresses: true` should list pods.

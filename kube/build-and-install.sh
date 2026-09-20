@@ -13,11 +13,12 @@
 #   ONLY=active-conn ./kube/build-and-install.sh
 #   ONLY=map-sync    ./kube/build-and-install.sh
 #
-# Flexible: pick any Service + NodePort without rebuilding:
-#   SERVICE_NAME=my-api NAMESPACE=prod NODEPORT=31001 TARGET_PORT=8080 ./kube/build-and-install.sh
+# Flexible: balance any NodePort Service(s) in a namespace without rebuilding:
+#   NAMESPACE=prod ./kube/build-and-install.sh                              # all NodePort Services
+#   NAMESPACE=prod SERVICE_NAME=my-api ./kube/build-and-install.sh          # just one
+#   NAMESPACE=prod SERVICE_SELECTOR=lb.example.com/enabled=true ./kube/build-and-install.sh
 # Or switch an existing install without reinstall:
-#   kubectl set env ds/pod-ip-tracker -c tracker LB_SERVICE_NAME=my-api LB_NAMESPACE=prod
-#   kubectl set env ds/pod-ip-tracker -c tc-loader LB_NODEPORT=31001 LB_TARGET_PORT=8080
+#   kubectl set env ds/pod-ip-tracker -c tracker LB_NAMESPACE=prod LB_SERVICE_NAME=my-api
 #
 # Speed knobs:
 #   SKIP_BUILD=1   # skip docker entirely, only kubectl apply/set env (fastest)
@@ -56,9 +57,8 @@ LOADER_IMG="${LOADER_IMG:-$REGISTRY/tc-lb-loader:latest}"
 ACTIVE_CONN_IMG="${ACTIVE_CONN_IMG:-$REGISTRY/active-conn:latest}"
 MAP_SYNC_IMG="${MAP_SYNC_IMG:-$REGISTRY/map-sync:latest}"
 
-SERVICE_NAME="${SERVICE_NAME:-test-service}"
-NODEPORT="${NODEPORT:-30080}"
-TARGET_PORT="${TARGET_PORT:-8000}"
+SERVICE_NAME="${SERVICE_NAME:-}"
+SERVICE_SELECTOR="${SERVICE_SELECTOR:-}"
 LB_IFACE="${LB_IFACE:-}"
 
 ONLY="${ONLY:-all}"
@@ -185,11 +185,11 @@ if [ "$INSTALL_BASE" = "1" ]; then
   kubectl -n "$NS" set image ds/pod-ip-tracker \
     "tracker=$TRACKER_REF" "tc-loader=$LOADER_REF" || true
 
-  echo "==> Applying flexible service/port selection"
+  echo "==> Applying service selection"
   kubectl -n "$NS" set env ds/pod-ip-tracker -c tracker \
-    "LB_SERVICE_NAME=$SERVICE_NAME" "LB_NAMESPACE=$NS" || true
+    "LB_NAMESPACE=$NS" "LB_SERVICE_SELECTOR=$SERVICE_SELECTOR" "LB_SERVICE_NAME=$SERVICE_NAME" || true
   kubectl -n "$NS" set env ds/pod-ip-tracker -c tc-loader \
-    "LB_NODEPORT=$NODEPORT" "LB_TARGET_PORT=$TARGET_PORT" "LB_IFACE=$LB_IFACE" || true
+    "LB_IFACE=$LB_IFACE" || true
 
   echo "==> Waiting for base LB rollout"
   kubectl -n "$NS" rollout status daemonset/pod-ip-tracker --timeout=180s
@@ -239,7 +239,7 @@ fi
 
 echo
 echo "OK."
-[ "$INSTALL_BASE" = "1" ] && echo "  base LB:    service $NS/$SERVICE_NAME nodeport $NODEPORT -> $TARGET_PORT"
+[ "$INSTALL_BASE" = "1" ] && echo "  base LB:    namespace $NS (selector='${SERVICE_SELECTOR:-all}', name='${SERVICE_NAME:-all}')"
 [ "$INSTALL_ACTIVE" = "1" ] && echo "  active-conn installed"
 [ "$INSTALL_MAPSYNC" = "1" ] && echo "  map-sync    installed"
 echo "  new nodes get a pod automatically; deleting a node removes its pod."

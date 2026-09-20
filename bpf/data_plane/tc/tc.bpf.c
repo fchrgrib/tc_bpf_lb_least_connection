@@ -15,36 +15,106 @@
 #define TC_ACT_OK	0
 #define ETH_P_IP	0x0800		/* Internet Protocol packet	*/
 #define TEST_NODEPORT   ((unsigned short) 30080)
+#define MAX_BACKENDS  256
+#define MAX_SERVICES  64
+#define STALE_NS      (45ULL * 1000 * 1000 * 1000)  // tracker heartbeat TTL
 
-struct np_backends {
-        __be32 be1;
-        __be32 be2;
-        __u16 targetPort;
+struct backend {
+    __u32 ip;          // pod IP, network bytes as u32 (your convention)
+    __u8  valid;       // 1 = usable right now
+    __u8  draining;    // 1 = terminating: no NEW flows, existing keep working
+    __u8  pad[2];
+};
+
+struct svc_config {
+    __u32 slot_base;   // where this service's slice starts in backends[]
+    __u32 n_backends;  // how many valid entries right now (<= MAX_BACKENDS)
+    __u32 target_port; // port to DNAT to (pod's containerPort)
+    __u32 pad;
+    __u64 heartbeat;   // bumped by userspace every reconcile (staleness guard)
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, MAX_SERVICES);
+    __type(key, __u16);
+    __type(value, struct svc_config);
+    __uint(pinning, LIBBPF_PIN_BY_NAME);   // tracker opens /sys/fs/bpf/svc_map
+} svc_map SEC(".maps");
+
+/**
+We will store the backends on each services here, you can choose
+based on slot_based based on svc_map that we choose 
+**/
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, MAX_SERVICES * MAX_BACKENDS);
+    __type(key, __u32);
+    __type(value, struct backend);
+    __uint(pinning, LIBBPF_PIN_BY_NAME);   // tracker opens /sys/fs/bpf/backends
+} backends SEC(".maps");
+
+/* Per-service liveness, written by the datapath itself: when the heartbeat
+ * changes we record the time; if it stops changing for STALE_NS the tracker is
+ * considered dead and we fall back to kube-proxy. Not shared, so no pinning. */
+struct svc_seen {
+    __u64 heartbeat;
+    __u64 last_seen_ns;
 };
 
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
-    __type(key, __u32);        // Always 0
-    __type(value, __u32);      // Selected backend IP
-    __uint(max_entries, 1);
-    __uint(pinning, LIBBPF_PIN_BY_NAME);
-} selected SEC(".maps");
+    __uint(max_entries, MAX_SERVICES);
+    __type(key, __u32);
+    __type(value, struct svc_seen);
+} svc_seen SEC(".maps");
+
+/* Per-service decision counters, exported by the tracker as Prometheus
+ * metrics. Pinned so userspace can read them. Plain increments are fine:
+ * approximate stats are all we need and it avoids another atomic helper. */
+struct svc_stats {
+    __u64 assigned;        // new flows DNATed to a backend
+    __u64 no_backend;      // new flows dropped through (no healthy backend)
+    __u64 stale_fallback;  // new flows skipped because the heartbeat went stale
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, MAX_SERVICES);
+    __type(key, __u32);
+    __type(value, struct svc_stats);
+    __uint(pinning, LIBBPF_PIN_BY_NAME);   // tracker reads /sys/fs/bpf/svc_stats
+} svc_stats SEC(".maps");
 
 struct {
   __uint(type, BPF_MAP_TYPE_HASH);
   __type(key, int);
   __type(value, int);
-  __uint(max_entries, 10240); // pin this by name
+  __uint(max_entries, 10240);
   __uint(pinning, LIBBPF_PIN_BY_NAME);
 } hash_map SEC(".maps");
 
-/* Simplified map definition for initial POC */
+/* Counts published by map_sync for pods running on OTHER nodes. This node's own
+ * counts live in hash_map; the selector sums the two. map_sync is the only
+ * writer here (single-writer rule: no clobbering local increments). */
 struct {
-        __uint(type, BPF_MAP_TYPE_HASH);
-        __uint(max_entries, 1024);
-        __type(key, __u16);
-        __type(value, struct np_backends);
-} svc_map SEC(".maps");
+  __uint(type, BPF_MAP_TYPE_HASH);
+  __type(key, int);
+  __type(value, int);
+  __uint(max_entries, 65536);
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+} remote_counts SEC(".maps");
+
+/* Balanced target ports, written by the tracker and read by the tracepoint.
+ * Declared here as well so the loader always pins it, even in a base-only
+ * install without the active-conn DaemonSet. */
+struct {
+  __uint(type, BPF_MAP_TYPE_HASH);
+  __type(key, __u16);
+  __type(value, __u8);
+  __uint(max_entries, 1024);
+  __uint(pinning, LIBBPF_PIN_BY_NAME);
+} svc_ports SEC(".maps");
 
 struct bpf_ct_opts {
         s32 netns_id;
@@ -99,7 +169,85 @@ int bpf_ct_set_status(const struct nf_conn *nfct, u32 status) __ksym;
 
 void bpf_ct_release(struct nf_conn *) __ksym;
 
-// static __always_inline int nodeport_lb4(struct __sk_buff *ctx) {
+/* Total active connections for a pod = this node's view + every peer's view. */
+static __always_inline __u32 count_of(__u32 ip){
+    __u32 total = 0;
+    int *c = bpf_map_lookup_elem(&hash_map, &ip);
+    if (c && *c > 0)
+        total += (__u32)*c;
+    int *r = bpf_map_lookup_elem(&remote_counts, &ip);
+    if (r && *r > 0)
+        total += (__u32)*r;
+    return total;
+}
+
+static __always_inline int backend_ok(struct backend *b){
+    return b && b->valid && !b->draining;
+}
+
+static __always_inline void stat_assigned(__u32 slot)
+{
+    struct svc_stats *st = bpf_map_lookup_elem(&svc_stats, &slot);
+    if (st)
+        st->assigned++;
+}
+
+static __always_inline void stat_no_backend(__u32 slot)
+{
+    struct svc_stats *st = bpf_map_lookup_elem(&svc_stats, &slot);
+    if (st)
+        st->no_backend++;
+}
+
+static __always_inline void stat_stale(__u32 slot)
+{
+    struct svc_stats *st = bpf_map_lookup_elem(&svc_stats, &slot);
+    if (st)
+        st->stale_fallback++;
+}
+
+/* 
+Pick backend using P2C logic that have O(1) complexity
+will pick 2 sample of backend and compare the active connection each of the
+will return the backend that have least connection than the other
+you can custom this function if you can
+*/ 
+static __always_inline __u32 pick_backend(struct svc_config *cfg)
+{
+    __u32 n = cfg->n_backends;
+    if (n == 0)
+        return 0;
+
+    if (n == 1) {   // only one choice
+        __u32 k = cfg->slot_base;
+        struct backend *b = bpf_map_lookup_elem(&backends, &k);
+        return backend_ok(b) ? b->ip : 0;
+    }
+
+    // two distinct random indices in [0, n)
+    __u32 i   = bpf_get_prandom_u32() % n;
+    __u32 off = 1 + (bpf_get_prandom_u32() % (n - 1));  // 1..n-1  => j != i
+    __u32 j   = (i + off) % n;
+
+    __u32 ki = cfg->slot_base + i;
+    __u32 kj = cfg->slot_base + j;
+    struct backend *bi = bpf_map_lookup_elem(&backends, &ki);
+    struct backend *bj = bpf_map_lookup_elem(&backends, &kj);
+
+    int oki = backend_ok(bi);
+    int okj = backend_ok(bj);
+    if (!oki && !okj) return 0;
+    if (!oki)         return bj->ip;
+    if (!okj)         return bi->ip;
+
+    __u32 ci = count_of(bi->ip);
+    __u32 cj = count_of(bj->ip);
+    if (ci < cj) return bi->ip;
+    if (cj < ci) return bj->ip;
+
+    // equal load: coin flip so ties don't always favor the same pod
+    return (bpf_get_prandom_u32() & 1) ? bi->ip : bj->ip;
+}
 
 /* Not marking this function to be inline for now */
 int nodeport_lb4(struct __sk_buff *ctx) {
@@ -108,9 +256,6 @@ int nodeport_lb4(struct __sk_buff *ctx) {
         void *data = (void *)(long)ctx->data;
         struct ethhdr *eth = data;
         u64 nh_off = sizeof(*eth);
-        struct np_backends *lkup;
-        __be32  b1;
-        __be32  b2;
 
         if (data + nh_off > data_end)
             return TC_ACT_OK;
@@ -123,7 +268,6 @@ int nodeport_lb4(struct __sk_buff *ctx) {
                         .netns_id = -1,
                 };
                 struct nf_conn *ct;
-                // bool ret;
 
 	        if ((void *)(iph + 1) > data_end)
                     return TC_ACT_OK;
@@ -152,81 +296,65 @@ int nodeport_lb4(struct __sk_buff *ctx) {
                         return TC_ACT_OK;
                 }
 
-                // Skip all BPF-CT unless port is of the target nodeport 
-/**
-                if (bpf_tuple.ipv4.dport != bpf_ntohs(TEST_NODEPORT)) {
-                        return TC_ACT_OK;
-                }
-**/
-
-                u16 key = bpf_ntohs(bpf_tuple.ipv4.dport);
-
-                lkup = (struct np_backends *) bpf_map_lookup_elem(&svc_map, &key);
-
-                if (lkup) {
-                    b1 = lkup->be1;
-                    b2 = lkup->be2;
-                    DEBUG_BPF_PRINTK("lkup result: Full BE1 0x%X  BE2 0x%X \n",
-                                      b1, b2)
-                } else {
-                    DEBUG_BPF_PRINTK("lkup result: NULL \n")
-                    return TC_ACT_OK;
-                }
-
 
                 ct = bpf_skb_ct_lookup(ctx, &bpf_tuple,
                                        sizeof(bpf_tuple.ipv4),
                                        &opts_def, sizeof(opts_def));
-                // ret = !!ct;
+
                 if (ct) {
                     DEBUG_BPF_PRINTK("CT lookup (ct found) 0x%X\n", ct)
                     bpf_ct_release(ct);
                 } else {
-                    DEBUG_BPF_PRINTK("CT lookup (no entry) 0x%X\n", 0)
-                    DEBUG_BPF_PRINTK("dport 0x%X 0x%X\n",  
-                                bpf_tuple.ipv4.dport, bpf_htons(TEST_NODEPORT))
-                    DEBUG_BPF_PRINTK("Got IP packet: dest: %pI4, protocol: %u", 
-                                &(iph->daddr), iph->protocol)
-                    /* Create a new CT entry */
+                    /* New flow. Pick a backend FIRST, then allocate the CT entry:
+                     * selecting before allocating avoids leaking an nf_conn on
+                     * the early-return paths below. */
+
+                    __u16 dport = bpf_ntohs(bpf_tuple.ipv4.dport);
+
+                    struct svc_config *cfg = bpf_map_lookup_elem(&svc_map, &dport);
+                    if (!cfg)
+                        return TC_ACT_OK;   // not our port: fall back to kube-proxy
+
+                    // Staleness: if the tracker's heartbeat stops changing, the
+                    // control plane is dead -> fall back instead of routing to
+                    // backends that may no longer exist.
+                    __u64 now = bpf_ktime_get_ns();
+                    __u32 slot = cfg->slot_base / MAX_BACKENDS;
+                    struct svc_seen *seen = bpf_map_lookup_elem(&svc_seen, &slot);
+                    if (seen) {
+                        if (seen->heartbeat != cfg->heartbeat) {
+                            seen->heartbeat = cfg->heartbeat;
+                            seen->last_seen_ns = now;
+                        } else if (now - seen->last_seen_ns > STALE_NS) {
+                            stat_stale(slot);
+                            return TC_ACT_OK;
+                        }
+                    }
+
+                    __u32 backend_ip = pick_backend(cfg);
+                    if (backend_ip == 0) {
+                        stat_no_backend(slot);
+                        return TC_ACT_OK;   // no healthy backend: fall back
+                    }
 
                     struct nf_conn *nct = bpf_skb_ct_alloc(ctx,
                                 &bpf_tuple, sizeof(bpf_tuple.ipv4),
                                 &opts_def, sizeof(opts_def));
-
                     if (!nct) {
                         DEBUG_BPF_PRINTK("bpf_skb_ct_alloc() failed\n")
                         return TC_ACT_OK;
                     }
 
-                    // Rudimentary load balancing for now based on received source port
-
-                    union nf_inet_addr addr = {};
-
-                    __u32 key = 0;
-                    __u32 *selected_backend = bpf_map_lookup_elem(&selected, &key);
-                    if (selected_backend) {
-                        DEBUG_BPF_PRINTK("Selected backend IP 0x%X\n", *selected_backend)
-                        addr.ip = *selected_backend;
-                    } else {
-                        DEBUG_BPF_PRINTK("No selected backend IP, using BE1 0x%X\n", b1)
-                        addr.ip = b1;
-                    }
-
-                    // NOTE: the datapath deliberately does NOT touch hash_map.
-                    // The active-conn tracepoint is the single source of truth
-                    // for connection counts; map_sync propagates them. Having
-                    // the datapath increment here as well meant two writers
-                    // with different semantics fighting over the same map.
 
                     /* Add DNAT info */
-                    bpf_ct_set_nat_info(nct, &addr, lkup->targetPort, NF_NAT_MANIP_DST);
+                    union nf_inet_addr addr = {};
 
-                    /* Now add SNAT (masquerade) info */
-                    /* For now using the node IP, check this TODO */
-                    /* addr.ip = 0x0101F00a;     Kind-Net bridge IP 10.240.1.1 */
+                    addr.ip = backend_ip;
+                    bpf_ct_set_nat_info(nct, &addr, cfg->target_port, NF_NAT_MANIP_DST);
 
+                    /* Add SNAT (masquerade) back to the node IP that received
+                     * the packet, so replies come back through this node. */
                     addr.ip = bpf_tuple.ipv4.daddr;
-
                     bpf_ct_set_nat_info(nct, &addr, -1, NF_NAT_MANIP_SRC);
 
                     bpf_ct_set_timeout(nct, 30000);
@@ -238,6 +366,7 @@ int nodeport_lb4(struct __sk_buff *ctx) {
 
                     if (ct) {
                         bpf_ct_release(ct);
+                        stat_assigned(slot);
                     }
                 }
         }

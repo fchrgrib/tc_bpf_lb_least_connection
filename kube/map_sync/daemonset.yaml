@@ -43,6 +43,7 @@ spec:
         imagePullPolicy: IfNotPresent
         args:
         - -port=50051
+        - -metrics-addr=:9102
         - -peer-dns=map-sync.default.svc.cluster.local
         - -tls-cert=/etc/map-sync/tls/tls.crt
         - -tls-key=/etc/map-sync/tls/tls.key
@@ -56,11 +57,12 @@ spec:
         securityContext:
           allowPrivilegeEscalation: false
           readOnlyRootFilesystem: true
-          # BPF + PERFMON: load/attach fentry. SYS_RESOURCE: remove memlock.
+          # BPF: open the pinned maps (hash_map read, remote_counts write).
+          # No BPF program is loaded here anymore, so PERFMON is not needed.
           # On kernels < 5.8 that lack CAP_BPF you may need to add SYS_ADMIN.
           capabilities:
             drop: ["ALL"]
-            add: ["BPF", "PERFMON", "SYS_RESOURCE"]
+            add: ["BPF"]
         volumeMounts:
         - name: bpf-fs
           mountPath: /sys/fs/bpf
