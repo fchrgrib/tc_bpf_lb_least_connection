@@ -54,6 +54,31 @@ struct bpf_ct_opts {
         u8 reserved[2];
 };
 
+/* Conntrack types used by the bpf_ct_* kfuncs. These live in the nf_conntrack
+ * module, which the upstream (core-only) vmlinux.h does not include. Define the
+ * minimal layouts we need here; they mirror the kernel definitions so kfunc
+ * BTF matching succeeds. */
+struct nf_conn;
+
+enum ip_conntrack_info {
+        IP_CT_ESTABLISHED = 0,
+        IP_CT_RELATED = 1,
+        IP_CT_NEW = 2,
+};
+
+enum nf_nat_manip_type {
+        NF_NAT_MANIP_SRC = 0,
+        NF_NAT_MANIP_DST = 1,
+};
+
+union nf_inet_addr {
+        __u32 all[4];
+        __be32 ip;
+        __be32 ip6[4];
+        struct in_addr in;
+        struct in6_addr in6;
+};
+
 struct nf_conn *
 bpf_skb_ct_lookup(struct __sk_buff *, struct bpf_sock_tuple *, u32,
                   struct bpf_ct_opts *, u32) __ksym;
@@ -155,14 +180,6 @@ int nodeport_lb4(struct __sk_buff *ctx) {
                 // ret = !!ct;
                 if (ct) {
                     DEBUG_BPF_PRINTK("CT lookup (ct found) 0x%X\n", ct)
-                    DEBUG_BPF_PRINTK("Timeout %u  status 0x%X dport 0x%X \n",  
-                                ct->timeout, ct->status, bpf_tuple.ipv4.dport)
-                    if (iph->protocol == IPPROTO_TCP) {
-                        DEBUG_BPF_PRINTK("TCP proto state %u flags  %u/ %u  last_dir  %u  \n",
-                                ct->proto.tcp.state,
-                                ct->proto.tcp.seen[0].flags, ct->proto.tcp.seen[1].flags,
-                                ct->proto.tcp.last_dir)
-                    }
                     bpf_ct_release(ct);
                 } else {
                     DEBUG_BPF_PRINTK("CT lookup (no entry) 0x%X\n", 0)
@@ -195,21 +212,11 @@ int nodeport_lb4(struct __sk_buff *ctx) {
                         addr.ip = b1;
                     }
 
-                    __u32 *count_conn = bpf_map_lookup_elem(&hash_map, &addr.ip);
-                    __u32 new_count = 0;
-
-                    if (count_conn) {
-                        new_count = *count_conn + 1;
-                        DEBUG_BPF_PRINTK("Current connection count for BE IP 0x%X: %u\n",
-                                         addr.ip, new_count)
-                    } else {
-                        new_count = 1;
-                        DEBUG_BPF_PRINTK("No previous count for BE IP 0x%X, setting to %u\n",
-                                         addr.ip, new_count)
-                    }
-
-                    bpf_map_update_elem(&hash_map, &addr.ip, &new_count, BPF_ANY);
-
+                    // NOTE: the datapath deliberately does NOT touch hash_map.
+                    // The active-conn tracepoint is the single source of truth
+                    // for connection counts; map_sync propagates them. Having
+                    // the datapath increment here as well meant two writers
+                    // with different semantics fighting over the same map.
 
                     /* Add DNAT info */
                     bpf_ct_set_nat_info(nct, &addr, lkup->targetPort, NF_NAT_MANIP_DST);

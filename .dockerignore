@@ -1,7 +1,7 @@
-# Keep the build context small. Both images build from the repo root:
-#   - tc-loader  needs libbpf/bpftool/vmlinux/bpf
-#   - map-sync   needs go/ + bpf/fentry
-# so we only drop heavy/unneeded trees and all build outputs here.
+# Keep the build context small. tc-loader / active-conn / map-sync images
+# build from the repo root and need: lib/ (libbpf, vmlinux.h) and the
+# relevant bpf/ subtree. tracker builds from bpf/user_space only.
+# So we only drop heavy/unneeded trees and all build outputs here.
 .git/
 .gitmodules
 .idea/
@@ -12,5 +12,5 @@ bin/
 **/target/
 **/*.o
 **/*.d
-blazesym/target/
-vmlinux.h/docs/
+lib/blazesym/target/
+lib/vmlinux.h/docs/

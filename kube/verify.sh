@@ -88,7 +88,7 @@ if kubectl -n "$NS" get ds active-conn >/dev/null 2>&1; then
 else
   fail "DaemonSet active-conn NOT installed — hash_map will only ever INCREASE,
         so 'least connection' degrades to 'fewest connections ever seen'.
-        Install with: ./kube/active_conn/install.sh"
+        Install with: ONLY=active-conn ./kube/build-and-install.sh"
 fi
 
 hdr "5. Recent warning events in $NS"

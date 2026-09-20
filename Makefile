@@ -22,12 +22,12 @@ build: go
 
 go:
 	@echo "==> Building Go userspace..."
-	@$(MAKE) -C go
+	@$(MAKE) -C bpf/user_space
 	@echo "✓ Go build complete"
 
 clean:
 	@echo "==> Cleaning build artifacts..."
-	@$(MAKE) -C go clean
+	@$(MAKE) -C bpf/user_space clean
 	@rm -rf build/
 	@echo "✓ Clean complete"
 

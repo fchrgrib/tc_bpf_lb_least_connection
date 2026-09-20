@@ -14,16 +14,16 @@ while others sit idle.
 
 This project replaces that decision point **per node, inside the kernel**:
 
-1. `tracker` (`go/pods_watcher/`) watches your Service's ready Pod IPs through
+1. `tracker` (`bpf/user_space/pods_watcher`) watches your Service's ready Pod IPs through
    the K8s API and keeps them in a pinned eBPF map
    (`/sys/fs/bpf/service_pod_ips`) — always current as Pods scale/churn.
-2. The TC program (`bpf/tc/tc.bpf.c`) attaches at **ingress** on each node's
+2. The TC program (`bpf/data_plane/tc`) attaches at **ingress** on each node's
    physical iface. For a new TCP/UDP flow to your `nodePort`, it DNATs the
    packet to the currently least-loaded backend (plus SNAT/masquerade) using
    kernel conntrack (`bpf_skb_ct_*`), so return traffic works with no userspace hop.
-3. The loader (`go/tc/tc.go`) re-evaluates every 2s: it reads live backend IPs
+3. The loader (`bpf/user_space/tc`) re-evaluates every 2s: it reads live backend IPs
    plus per-backend connection counts (`hash_map`, optionally synced across
-   nodes by `go/map_sync/` via fentry + gRPC) and writes the winner into the
+   nodes by `bpf/user_space/map_sync` via fentry + gRPC) and writes the winner into the
    `selected` map the datapath reads.
 
 In short: **any traffic hitting `<any-node-ip>:<nodePort>` gets steered in-kernel
@@ -68,10 +68,12 @@ to whichever backend Pod currently holds the fewest connections.**
 - **Kernel requirement.** Needs TC-BPF with `clsact` plus `bpf_skb_ct_*`
   conntrack kfuncs (recent kernels, e.g. 6.x with `CONFIG_NETFILTER` conntrack).
   Old kernels fail at load/attach time.
-- **Privileged per-node agent.** Requires `privileged: true`, `hostNetwork`,
-  `BPF`/`NET_ADMIN`/`SYS_ADMIN` caps, and host mounts (`/lib/modules`,
-  `/sys/fs/bpf`). This is the standard eBPF-DaemonSet tradeoff: full node power
-  in exchange for kernel access.
+- **Elevated per-node agent.** The datapath containers need `hostNetwork`, host
+  mounts (`/lib/modules`, `/sys/fs/bpf`), and the `BPF`/`NET_ADMIN`/
+  `SYS_RESOURCE` capabilities; the init container needs `SYS_ADMIN` to mount
+  bpffs. It is **not** `privileged` and runs with `seccompProfile: Unconfined`
+  (the default profile blocks `bpf()` without `CAP_SYS_ADMIN`). On kernels
+  < 5.8 (no `CAP_BPF`) add `SYS_ADMIN` to the datapath containers.
 - **Static fallback is 2 backends; scale cap ~100 Pods.** `svc_map` carries only
   `be1/be2` as fallback (live set comes from the tracker map, capped at 100
   entries in `ebpfMapSpec`), `hash_map` at 10240 entries. Tune `MaxEntries` for
@@ -79,9 +81,9 @@ to whichever backend Pod currently holds the fewest connections.**
 - **Eventual consistency (~2s + resync).** Backend election runs every 2s and the
   Pod watch resyncs every 15 min as backup — brief imbalance is possible right
   after scale/rollout events.
-- **Per-node counts by default.** Without deploying `go/map_sync/` (fentry +
-  gRPC peer sync, not included in the DaemonSet), each node balances on locally
-  observed connection counts rather than a global view.
+- **Per-node counts by default.** Without deploying `bpf/user_space/map_sync` (fentry +
+  gRPC peer sync, installed by `--all`), each node balances on locally observed
+  connection counts rather than a global view.
 - **No L7 features.** No TLS termination, header/path routing, retries, rate
   limiting, or Prometheus metrics — it is a pure L3/L4 least-conn steerer.
   Health checking = K8s readiness only (unready Pods are excluded on next sync).
@@ -99,7 +101,7 @@ eBPF lets you run small verified programs **inside the kernel** at hook points
 like TC ingress — no kernel rebuild, no module, detachable at runtime. This
 project uses exactly that:
 
-- **Datapath in kernel (`bpf/tc/tc.bpf.c`, hook `tc_ingress`).** Every packet to
+- **Datapath in kernel (`bpf/data_plane/tc`, hook `tc_ingress`).** Every packet to
   your `nodePort` is inspected before it climbs the normal stack. New flows get
   NAT decision + connection counting via eBPF maps (`svc_map`, `hash_map`,
   `selected`); established flows hit existing conntrack entries and pass
@@ -130,15 +132,15 @@ DaemonSets with tighter privileges:
 
 | Component | Source | Job |
 |---|---|---|
-| `tracker` | `go/pods_watcher/` | Watches the Service's Pods via the K8s API, maintains pinned map `/sys/fs/bpf/service_pod_ips` |
-| `tc-loader` | `go/tc/` | Attaches the TC eBPF program (`bpf/tc/tc.bpf.c`) to the host iface; every 2s picks the least-loaded backend into `selected` |
-| `active-conn` | `go/trace/` + `bpf/trace/tracepoint.bpf.c` | **Counts active connections per pod IP** — `+1` on `TCP_ESTABLISHED`, `-1` on `TCP_CLOSE` |
-| `map-sync` | `go/map_sync/` + `bpf/fentry/fentry.c` | fentry catches those map updates → ringbuf → gRPC → merges every node's counts into the pinned `hash_map` |
+| `tracker` | `bpf/user_space/pods_watcher` | Watches the Service's Pods via the K8s API, maintains pinned map `/sys/fs/bpf/service_pod_ips` |
+| `tc-loader` | `bpf/user_space/tc` | Attaches the TC eBPF program (`bpf/data_plane/tc`) to the host iface; every 2s picks the least-loaded backend into `selected` |
+| `active-conn` | `bpf/user_space/trace` + `bpf/data_plane/trace` | **Counts active connections per pod IP** — `+1` on `TCP_ESTABLISHED`, `-1` on `TCP_CLOSE` |
+| `map-sync` | `bpf/user_space/map_sync` + `bpf/data_plane/fentry` | fentry catches those map updates → ringbuf → gRPC → merges every node's counts into the pinned `hash_map` |
 
 The chain that makes least-connection correct:
 
 ```
-active-conn  pod_connection_counts[podIP]  (+1 establish / -1 close)
+active-conn  pod_conn_counts[podIP]  (+1 establish / -1 close)
     ↓ fentry hook on htab_map_update_elem
 map-sync     → ringbuf → gRPC peers → hash_map[podIP]   (cluster-wide view)
     ↓
@@ -149,16 +151,16 @@ tc datapath  DNATs each new flow to `selected`
 
 > **`active-conn` is not optional.** Without it nothing ever decrements, so
 > `hash_map` only grows and "least connection" silently degrades into "fewest
-> connections *ever seen*". Install it with `./kube/active_conn/install.sh`.
+> connections *ever seen*". Install it with `./kube/build-and-install.sh --all`
+> (or `ONLY=active-conn ./kube/build-and-install.sh`).
 
 Supporting pieces:
 
 - `kube/service/pt_rbac.yaml` — ServiceAccount + namespace-scoped `Role`/`RoleBinding` (`get,list,watch` on `pods,services`).
 - `kube/service/lb_service.yaml` — demo `NodePort` Service (`nodePort: 30080`, `targetPort: 8000`).
 - `kube/service/backend.yaml` — demo backend Deployment (3x `flask-backend` on port 8000).
-- `go/tc/entrypoint.sh` — auto-detects the host iface per node (see Configuration).
-- `kube/build-and-install.sh` — one-shot build + install for the datapath.
-- `kube/active_conn/install.sh`, `kube/map_sync/install.sh` — the two extra components.
+- `bpf/user_space/tc` — auto-detects the host iface per node (see Configuration).
+- `kube/build-and-install.sh` — one-shot build + install for **all** components (`--all`, or `ONLY=<comp>`).
 - `kube/verify.sh` — read-only preflight + health check.
 
 Auto-scale behavior is native Kubernetes: the DaemonSet controller creates one Pod
@@ -168,10 +170,18 @@ hook that removes the leftover `clsact` qdisc.
 
 ## Prerequisites
 
+First, fetch the vendored dependencies (libbpf, bpftool, vmlinux.h, blazesym
+live in `lib/` as git submodules, so a fresh clone needs them initialized):
+
+```bash
+git submodule update --init --recursive
+```
+
 On each node (including nodes you will add later):
 
 - Linux kernel with TC-BPF + `bpf_skb_ct_*` kfuncs support, bpffs mountable at `/sys/fs/bpf`.
-- kubelet able to run privileged DaemonSet Pods (`hostNetwork`, `/lib/modules`, `/sys/fs/bpf`).
+- kubelet able to run DaemonSet Pods with `hostNetwork` and the host mounts
+  `/lib/modules`, `/sys/fs/bpf` (no `privileged` required).
 
 On the control-plane where you install from:
 
@@ -235,10 +245,10 @@ SKIP_BUILD=1 REGISTRY=local ./kube/build-and-install.sh --all  # uses preloaded 
 
 ```bash
 # 1. Build + push (run where docker works; Dockerfile contexts matter)
-docker build -f go/pods_watcher/Dockerfile -t fchrgrib/pod-ip-tracker:latest go/pods_watcher
-docker build -f go/tc/Dockerfile -t fchrgrib/tc-lb-loader:latest .
-docker build -f go/trace/Dockerfile -t fchrgrib/active-conn:latest .
-docker build -f go/map_sync/Dockerfile -t fchrgrib/map-sync:latest .
+docker build -f bpf/user_space/pods_watcher/Dockerfile -t fchrgrib/pod-ip-tracker:latest bpf/user_space
+docker build -f bpf/user_space/tc/Dockerfile -t fchrgrib/tc-lb-loader:latest .
+docker build -f bpf/user_space/trace/Dockerfile -t fchrgrib/active-conn:latest .
+docker build -f bpf/user_space/map_sync/Dockerfile -t fchrgrib/map-sync:latest .
 
 # 2. Install from control-plane (only this step needs the cluster)
 kubectl apply -f kube/service/pt_rbac.yaml
@@ -269,15 +279,14 @@ kubectl apply -f kube/service/lb_service.yaml
 # One command installs everything:
 ./kube/build-and-install.sh --all
 
-# Or install components individually:
-./kube/build-and-install.sh                    # 1. Main LB (tracker + tc-loader)
-./kube/active_conn/install.sh                  # 2. Active connection counter
-./kube/map_sync/install.sh                     # 3. Cross-node map sync
+# Or target a single component (builds + installs just that one):
+ONLY=active-conn ./kube/build-and-install.sh   # active connection counter
+ONLY=map-sync    ./kube/build-and-install.sh   # cross-node map sync
 ```
 
 After installation, the full chain is:
 ```
-active-conn  +1 ESTABLISHED / -1 CLOSE  pod_connection_counts[podIP]
+active-conn  +1 ESTABLISHED / -1 CLOSE  pod_conn_counts[podIP]
     ↓ fentry hook
 map-sync     → ringbuf → gRPC peers → hash_map[podIP] (cross-node)
     ↓
@@ -419,7 +428,7 @@ A hardened, mTLS + NetworkPolicy deployment lives in `kube/map_sync/` — see
 [`kube/map_sync/README.md`](kube/map_sync/README.md):
 
 ```bash
-./kube/map_sync/install.sh
+ONLY=map-sync ./kube/build-and-install.sh
 ```
 
 It requires cert-manager, builds the `map-sync` image, stands up a CA + workload
@@ -444,16 +453,17 @@ ordinary, locked-down workload.
 ## Project layout
 
 ```text
-bpf/tc/            tc.bpf.c (datapath - kernel space)
-bpf/fentry/        fentry tracing for map sync
-bpf/trace/         tracepoint.bpf.c (datapath - kernel space)
-go/tc/             tc.go (loader/least-conn loop - user space), Dockerfile, entrypoint.sh
-go/trace/          tracepoint.go (active-connection loader), Dockerfile
-go/pods_watcher/   tracker daemon (Pod watch → pinned eBPF map), Dockerfile
-go/map_sync/       cross-node hash_map sync via gRPC, Dockerfile
+bpf/data_plane/tc/        tc.bpf.c (datapath - kernel space)
+bpf/data_plane/fentry/    fentry tracing for map sync
+bpf/data_plane/trace/     tracepoint.bpf.c (kernel space)
+bpf/user_space/tc/        tc.go (loader/least-conn loop), Dockerfile, entrypoint.sh
+bpf/user_space/trace/     tracepoint.go (active-connection loader), Dockerfile
+bpf/user_space/pods_watcher/ tracker daemon (Pod watch → pinned eBPF map), Dockerfile
+bpf/user_space/map_sync/  cross-node hash_map sync via gRPC, Dockerfile
+lib/               submodules: libbpf, bpftool, vmlinux.h, blazesym
 kube/service/      pt_rbac.yaml, pt_daemonset.yaml, lb_service.yaml, backend.yaml
-kube/map_sync/     hardened map_sync: cert-manager mTLS, NetworkPolicy, DaemonSet, install.sh
-kube/active_conn/  active-conn: tracepoint DaemonSet, RBAC, install.sh
-kube/build-and-install.sh  one-shot build + install (--all for full chain)
+kube/map_sync/     hardened map_sync: cert-manager mTLS, NetworkPolicy, DaemonSet
+kube/active_conn/  active-conn: tracepoint DaemonSet, RBAC
+kube/build-and-install.sh  one-shot build + install (--all, or ONLY=<comp>)
 kube/verify.sh     preflight + health check (read-only)
 ```

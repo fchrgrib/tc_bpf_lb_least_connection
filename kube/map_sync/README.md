@@ -32,22 +32,26 @@ Only the datapath (`tracker`, `tc-loader`) stays privileged. The control plane
 
 ## Install (one command)
 
-On the control-plane:
+map_sync is installed by the central build script — there is no separate
+`install.sh`. On the control-plane:
 
 ```bash
-./kube/map_sync/install.sh
+ONLY=map-sync ./kube/build-and-install.sh
+
+# Everything at once (base LB + active-conn + map_sync):
+./kube/build-and-install.sh --all
 
 # LAN registry, no Docker Hub:
-REGISTRY=192.168.122.100:5000 ./kube/map_sync/install.sh
+REGISTRY=192.168.122.100:5000 ONLY=map-sync ./kube/build-and-install.sh
 
 # Images preloaded on nodes (no push):
-SKIP_PUSH=1 REGISTRY=local MAP_SYNC_IMG=local/map-sync:latest ./kube/map_sync/install.sh
+SKIP_PUSH=1 REGISTRY=local MAP_SYNC_IMG=local/map-sync:latest ONLY=map-sync ./kube/build-and-install.sh
 ```
 
 What it does, in order:
 
 1. Verifies cert-manager is installed.
-2. Builds/pushes the `map-sync` image (`go/map_sync/Dockerfile`).
+2. Builds/pushes the `map-sync` image (`../../bpf/user_space/map_sync`).
 3. Applies the self-signed bootstrap issuer, the CA cert, and the CA `ClusterIssuer`.
 4. Applies `ServiceAccount`, headless `Service`, workload `Certificate`, `NetworkPolicy`.
 5. Applies the `DaemonSet` (image substituted).
@@ -57,7 +61,7 @@ What it does, in order:
 
 ```bash
 # 1. Build + push the image
-docker build -f go/map_sync/Dockerfile -t fchrgrib/map-sync:latest .
+docker build -f bpf/user_space/map_sync/Dockerfile -t fchrgrib/map-sync:latest .
 docker push fchrgrib/map-sync:latest
 
 # 2. Create the CA (once per cluster)

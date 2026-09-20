@@ -1,7 +1,7 @@
 .PHONY: all build clean pods-watcher map-sync tc-loader active-conn
 
-# Centralized build output
-BUILD_ROOT := $(abspath ../build)
+# Centralized build output (repo root ./build)
+BUILD_ROOT := $(abspath ../../build)
 GO_BUILD := $(BUILD_ROOT)/go
 
 all: build

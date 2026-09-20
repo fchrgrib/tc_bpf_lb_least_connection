@@ -11,6 +11,12 @@
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
+// Only the active-conn counter map is a legitimate sync source. Every other
+// hash map on the node (service_pod_ips, selected, unrelated eBPF programs)
+// must be ignored: forwarding their updates would write foreign/truncated
+// keys into the selector's hash_map. Names are capped at BPF_OBJ_NAME_LEN-1.
+#define TARGET_MAP_NAME "pod_conn_counts"
+
 struct {
   int (*type)[BPF_MAP_TYPE_ARRAY];
   int (*max_entries)[1];
@@ -51,19 +57,29 @@ static void __always_inline log_map_update(struct bpf_map *updated_map,
   if ((bpf_get_current_pid_tgid() >> 32) == conf->host_pid)
     return;
 
+  // Reject anything that is not the active-conn counter map.
+  char name[BPF_NAME_LEN] = {};
+  if (bpf_probe_read_str(name, BPF_NAME_LEN, updated_map->name) < 0)
+    return;
+  if (__builtin_memcmp(name, TARGET_MAP_NAME, sizeof(TARGET_MAP_NAME) - 1) != 0)
+    return;
+
   // Get basic info about the map
   uint32_t map_id = MEM_READ(updated_map->id);
   uint32_t key_size = MEM_READ(updated_map->key_size);
   uint32_t value_size = MEM_READ(updated_map->value_size);
 
+  // Defense in depth: the counter map is u32 -> u32.
+  if (key_size != sizeof(__u32) || value_size != sizeof(__u32))
+    return;
+
   struct MapData *out_data;
   out_data = bpf_ringbuf_reserve(&map_events, sizeof(*out_data), 0);
   if (!out_data) {
-    bpf_printk("Failed to reserve mem in ringbuf\n");
     return;
   }
 
-  bpf_probe_read_str(out_data->name, BPF_NAME_LEN, updated_map->name);
+  __builtin_memcpy(out_data->name, name, BPF_NAME_LEN);
   bpf_probe_read(&out_data->key, sizeof(*pKey), pKey);
   out_data->key_size = key_size;
   if (pValue != 0) {
@@ -81,16 +97,12 @@ static void __always_inline log_map_update(struct bpf_map *updated_map,
 SEC("fentry/htab_map_update_elem")
 int BPF_PROG(bpf_prog_kern_hmapupdate, struct bpf_map *map, void *key,
              void *value, u64 map_flags) {
-  bpf_printk("htab_map_update_elem\n");
-
   log_map_update(map, key, value, MAP_UPDATE);
   return 0;
 }
 
 SEC("fentry/htab_map_delete_elem")
 int BPF_PROG(bpf_prog_kern_hmapdelete, struct bpf_map *map, void *key) {
-  bpf_printk("htab_map_delete_elem\n");
-
   log_map_update(map, key, 0, MAP_DELETE);
   return 0;
 }

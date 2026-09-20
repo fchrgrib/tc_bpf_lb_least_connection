@@ -1,8 +1,10 @@
 # Small + fast-push tracker image (~15MB instead of ~120MB on ubuntu).
 # Static build (no CGO needed: cilium/ebpf + client-go are pure Go), stripped.
+# Built from the bpf/user_space module root:
+#   docker build -f bpf/user_space/pods_watcher/Dockerfile -t <registry>/pod-ip-tracker:latest bpf/user_space
 FROM golang:1.25 AS builder
 WORKDIR /app
-# Copy entire go/ folder for unified module
+# Copy module files + this package only
 COPY go.mod go.sum ./
 RUN go mod download
 COPY pods_watcher/ ./pods_watcher/

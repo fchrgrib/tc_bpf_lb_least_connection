@@ -1,12 +1,12 @@
 [submodule "blazesym"]
-	path = blazesym
+	path = lib/blazesym
 	url = https://github.com/libbpf/blazesym.git
 [submodule "bpftool"]
-	path = bpftool
+	path = lib/bpftool
 	url = https://github.com/libbpf/bpftool.git
 [submodule "libbpf"]
-	path = libbpf
+	path = lib/libbpf
 	url = https://github.com/libbpf/libbpf.git
 [submodule "vmlinux.h"]
-	path = vmlinux.h
+	path = lib/vmlinux.h
 	url = https://github.com/libbpf/vmlinux.h.git

@@ -1,6 +1,6 @@
 package main
 
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -target amd64 -cc clang tc ../../bpf/tc/tc.bpf.c -- -I../../vmlinux/x86 -I../../libbpf/include/uapi
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -target amd64 -cc clang tc ../../data_plane/tc/tc.bpf.c -- -I../../../lib/vmlinux.h/include/x86 -I../../../lib/libbpf/include/uapi
 
 import (
 	"context"
@@ -18,7 +18,6 @@ import (
 	"github.com/cilium/ebpf/rlimit"
 	"github.com/florianl/go-tc"
 	"github.com/florianl/go-tc/core"
-	"github.com/mdlayher/netlink"
 )
 
 func main() {
@@ -92,10 +91,8 @@ func main() {
 		},
 	}
 
-	if err := tcnl.Qdisc().Add(&qdisc); err != nil {
-		if !errors.Is(err, netlink.OpError{}.Err) {
-			log.Printf("Qdisc may already exist: %v", err)
-		}
+	if err := tcnl.Qdisc().Add(&qdisc); err != nil && !errors.Is(err, syscall.EEXIST) {
+		log.Printf("Adding clsact qdisc (continuing): %v", err)
 	}
 
 	// Attach BPF filter
@@ -191,7 +188,12 @@ func findLeastConnection(svcPodIPs, hashMap *ebpf.Map) uint32 {
 	iter := svcPodIPs.Iterate()
 
 	for iter.Next(&key, &value) {
-		ip := binary.BigEndian.Uint32(value[12:16])
+		// The tracker stores the address via ip.To16(); the last 4 bytes are
+		// the IPv4 address in network order. The datapath (and the tracepoint
+		// counter map key) represent an address by copying those 4 bytes
+		// verbatim into a u32, i.e. little-endian on x86. Matching that here is
+		// what makes the hash_map lookup and the `selected` DNAT value line up.
+		ip := binary.LittleEndian.Uint32(value[12:16])
 		if ip == 0 {
 			continue
 		}
@@ -234,7 +236,9 @@ func parseIP(s string) uint32 {
 	if ip4 == nil {
 		log.Fatalf("Not an IPv4 address: %s", s)
 	}
-	return binary.BigEndian.Uint32(ip4)
+	// Little-endian: mirror the datapath's "raw network bytes as a u32"
+	// convention (see findLeastConnection).
+	return binary.LittleEndian.Uint32(ip4)
 }
 
 // parseOptionalIP returns 0 (meaning "no static fallback") for auto/empty/0.0.0.0,
@@ -249,6 +253,7 @@ func parseOptionalIP(s string) uint32 {
 
 func formatIP(ip uint32) string {
 	bytes := make([]byte, 4)
-	binary.BigEndian.PutUint32(bytes, ip)
+	// Little-endian to undo the datapath's raw-bytes-as-u32 representation.
+	binary.LittleEndian.PutUint32(bytes, ip)
 	return net.IPv4(bytes[0], bytes[1], bytes[2], bytes[3]).String()
 }

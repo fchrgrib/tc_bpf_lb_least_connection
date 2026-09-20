@@ -8,9 +8,9 @@ bin/
 **/*.skel.h
 
 # Generated bpf2go bindings
-go/map_sync/fentry_*_bpfel.*
-go/tc/tc_*_bpfel.*
-go/trace/tracepoint_*_bpfel.*
+bpf/user_space/map_sync/fentry_*_bpfel.*
+bpf/user_space/tc/tc_*_bpfel.*
+bpf/user_space/trace/tracepoint_*_bpfel.*
 
 # IDE
 .idea/

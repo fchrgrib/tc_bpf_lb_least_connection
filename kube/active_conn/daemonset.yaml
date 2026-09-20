@@ -1,7 +1,7 @@
 # active-conn DaemonSet: counts ACTIVE TCP connections per pod IP on every node.
 #
 # This is the signal source for least-connection. Chain:
-#   active-conn (this)  -> pod_connection_counts[podIP]  (+1 ESTABLISHED / -1 CLOSE)
+#   active-conn (this)  -> pod_conn_counts[podIP]  (+1 ESTABLISHED / -1 CLOSE)
 #   fentry (map_sync)   -> catches the map update -> ringbuf -> gRPC -> hash_map
 #   tc-loader           -> reads hash_map[podIP], picks the minimum -> selected
 #   tc datapath         -> DNATs new flows to `selected`
